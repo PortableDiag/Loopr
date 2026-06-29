@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand">#7C5CFF</color>
+    <color name="brand_dark">#6646E6</color>
+    <color name="brand_light">#9B82FF</color>
+    <color name="on_brand">#FFFFFF</color>
+
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="scrim">#99000000</color>
+    <color name="scrim_strong">#CC000000</color>
+
+    <!-- Light surfaces -->
+    <color name="light_bg">#FBF9FF</color>
+    <color name="light_surface">#FFFFFF</color>
+    <color name="light_surface_variant">#EDE9F4</color>
+    <color name="light_on_surface">#1B1B22</color>
+    <color name="light_on_surface_variant">#5A5867</color>
+
+    <!-- Dark surfaces -->
+    <color name="dark_bg">#0E0E12</color>
+    <color name="dark_surface">#17171D</color>
+    <color name="dark_surface_variant">#23232C</color>
+    <color name="dark_on_surface">#ECEAF4</color>
+    <color name="dark_on_surface_variant">#A7A4B6</color>
+
+    <color name="ab_marker_a">#3DDC97</color>
+    <color name="ab_marker_b">#FF5C7A</color>
+</resources>

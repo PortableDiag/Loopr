@@ -1,0 +1,708 @@
+package com.loopr.player
+
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.graphics.drawable.Icon
+import android.media.AudioManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Rational
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.View
+import android.widget.SeekBar
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.updatePadding
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import com.loopr.player.databinding.ActivityPlayerBinding
+import kotlin.math.abs
+import kotlin.math.roundToInt
+
+/** Holds the play queue across the Activity boundary without hitting Binder size limits. */
+object PlayQueue {
+    @JvmField var items: List<VideoItem> = emptyList()
+}
+
+@UnstableApi
+class PlayerActivity : AppCompatActivity() {
+
+    companion object {
+        const val EXTRA_TITLE = "title"
+        const val EXTRA_INDEX = "index"
+        private const val PIP_ACTION = "com.loopr.player.PIP_CONTROL"
+        private const val EXTRA_CONTROL = "control"
+        private const val CONTROL_PLAY = 1
+        private const val CONTROL_PAUSE = 2
+
+        private const val KEY_REPEAT = "repeat_mode"
+        private const val KEY_SHUFFLE = "shuffle"
+
+        private val SPEEDS = floatArrayOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+        private const val SEEK_STEP_MS = 10_000L
+        private const val UNSET = Long.MIN_VALUE
+        private const val HIDE_DELAY = 3500L
+    }
+
+    private lateinit var binding: ActivityPlayerBinding
+    private lateinit var player: ExoPlayer
+    private lateinit var audio: AudioManager
+    private val handler = Handler(Looper.getMainLooper())
+
+    private var queue: List<VideoItem> = emptyList()
+    private var startIndex = 0
+    private var currentVideoIndex = 0
+
+    private var userRepeatMode = Player.REPEAT_MODE_ALL
+    private var shuffle = false
+
+    // A-B loop (applies to the current item only)
+    private var aMs = UNSET
+    private var bMs = UNSET
+    private var isClipped = false
+    private var clippedIndex = -1
+    private var fullDurationMs = 0L
+
+    private var speedIndex = 3
+    private var muted = false
+    private var resizeIndex = 0
+    private val resizeModes = intArrayOf(
+        AspectRatioFrameLayout.RESIZE_MODE_FIT,
+        AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
+        AspectRatioFrameLayout.RESIZE_MODE_FILL
+    )
+    private val resizeLabels = arrayOf("Fit", "Crop", "Stretch")
+
+    private var controlsVisible = true
+    private var isSeeking = false
+
+    // gesture state
+    private var gestureAxis = 0
+    private var verticalRight = false
+    private var startBrightness = 0.5f
+    private var startVolume = 0
+    private var seekStartPos = 0L
+    private var pendingSeekTarget = -1L
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityPlayerBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        val prefs = getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE)
+        userRepeatMode = prefs.getInt(KEY_REPEAT, Player.REPEAT_MODE_ALL)
+        shuffle = prefs.getBoolean(KEY_SHUFFLE, false)
+
+        if (!buildQueue()) {
+            Toast.makeText(this, "No video", Toast.LENGTH_SHORT).show(); finish(); return
+        }
+        binding.title.text = queue[startIndex].title
+        binding.title.isSelected = true
+
+        applyInsets()
+        setupButtons()
+        setupGestures()
+        setupSeekBar()
+        setupPlayer()
+        updateChips()
+        showControls()
+    }
+
+    /** Resolves the play queue from the static handoff, or a single external VIEW intent. */
+    private fun buildQueue(): Boolean {
+        val idx = intent.getIntExtra(EXTRA_INDEX, -1)
+        if (PlayQueue.items.isNotEmpty() && idx >= 0) {
+            queue = PlayQueue.items
+            startIndex = idx.coerceIn(0, queue.size - 1)
+        } else {
+            val uri = intent.data ?: return false
+            val title = intent.getStringExtra(EXTRA_TITLE)
+                ?: uri.lastPathSegment ?: "Video"
+            queue = listOf(VideoItem(0, uri, title, 0, 0, 0, 0, ""))
+            startIndex = 0
+        }
+        currentVideoIndex = startIndex
+        return true
+    }
+
+    // ---------------- Player ----------------
+
+    private fun toMediaItem(v: VideoItem): MediaItem =
+        MediaItem.Builder()
+            .setUri(v.uri)
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(v.title).build())
+            .build()
+
+    private fun clippedMediaItem(v: VideoItem, a: Long, b: Long): MediaItem =
+        toMediaItem(v).buildUpon()
+            .setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(a).setEndPositionMs(b).build()
+            ).build()
+
+    private fun setupPlayer() {
+        player = ExoPlayer.Builder(this).build()
+        binding.playerView.player = player
+        binding.playerView.resizeMode = resizeModes[resizeIndex]
+
+        player.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                binding.buffering.visibility =
+                    if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
+                if (state == Player.STATE_READY && !isClipped) {
+                    val d = player.duration
+                    if (d > 0) {
+                        fullDurationMs = d
+                        binding.duration.text = VideoAdapter.formatDuration(d)
+                        updateMarkers()
+                    }
+                }
+            }
+
+            override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+                val idx = player.currentMediaItemIndex
+                if (idx != currentVideoIndex) {
+                    // Moved to a different video; A-B belonged to the previous one.
+                    currentVideoIndex = idx
+                    aMs = UNSET; bMs = UNSET; isClipped = false; clippedIndex = -1
+                    fullDurationMs = 0
+                    binding.duration.text = "0:00"
+                    binding.position.text = "0:00"
+                    binding.seekBar.progress = 0
+                    updateChips(); updateMarkers()
+                }
+                binding.title.text = item?.mediaMetadata?.title
+                    ?: queue.getOrNull(idx)?.title ?: ""
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                binding.btnPlayPause.setImageResource(
+                    if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play
+                )
+                if (isInPipMode()) updatePipParams()
+                if (isPlaying) scheduleHide() else handler.removeCallbacks(hideRunnable)
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (isInPipMode()) updatePipParams()
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                Toast.makeText(this@PlayerActivity, "Can't play: ${error.errorCodeName}", Toast.LENGTH_LONG).show()
+                // Skip a bad file when running through a queue.
+                if (player.hasNextMediaItem()) player.seekToNextMediaItem()
+            }
+        })
+
+        player.setMediaItems(queue.map { toMediaItem(it) }, startIndex, 0L)
+        player.repeatMode = userRepeatMode
+        player.shuffleModeEnabled = shuffle
+        player.setPlaybackSpeed(SPEEDS[speedIndex])
+        player.volume = if (muted) 0f else 1f
+        player.prepare()
+        player.playWhenReady = true
+        startProgress()
+    }
+
+    private fun currentAbsPosition(): Long =
+        if (isClipped && aMs != UNSET) aMs + player.currentPosition else player.currentPosition
+
+    private fun seekToAbs(absMs: Long) {
+        if (isClipped) {
+            player.seekTo(absMs.coerceIn(aMs, bMs) - aMs)
+        } else {
+            val max = if (fullDurationMs > 0) fullDurationMs else absMs
+            player.seekTo(absMs.coerceIn(0L, max))
+        }
+    }
+
+    private fun seekBy(deltaMs: Long) = seekToAbs(currentAbsPosition() + deltaMs)
+
+    // ---------------- Queue navigation ----------------
+
+    private fun nextItem() {
+        restoreClip()
+        if (player.hasNextMediaItem()) player.seekToNextMediaItem()
+        else toast(getString(R.string.end_of_queue))
+        player.play()
+    }
+
+    private fun prevItem() {
+        restoreClip()
+        when {
+            player.currentPosition > 3000 -> player.seekTo(0)
+            player.hasPreviousMediaItem() -> player.seekToPreviousMediaItem()
+            else -> player.seekTo(0)
+        }
+        player.play()
+    }
+
+    private fun cycleRepeat() {
+        userRepeatMode = (userRepeatMode + 1) % 3
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE).edit()
+            .putInt(KEY_REPEAT, userRepeatMode).apply()
+        if (!isClipped) player.repeatMode = userRepeatMode
+        updateChips()
+        toast(getString(
+            when (userRepeatMode) {
+                Player.REPEAT_MODE_ONE -> R.string.repeat_one_msg
+                Player.REPEAT_MODE_ALL -> R.string.repeat_all_msg
+                else -> R.string.repeat_off_msg
+            }
+        ))
+    }
+
+    private fun toggleShuffle() {
+        shuffle = !shuffle
+        player.shuffleModeEnabled = shuffle
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_SHUFFLE, shuffle).apply()
+        updateChips()
+        toast(getString(if (shuffle) R.string.shuffle_on else R.string.shuffle_off))
+    }
+
+    // ---------------- A-B loop ----------------
+
+    private fun setPointA() {
+        aMs = currentAbsPosition()
+        if (bMs != UNSET && bMs <= aMs) bMs = UNSET
+        toast(getString(R.string.ab_hint_a, VideoAdapter.formatDuration(aMs)))
+        applyAb()
+    }
+
+    private fun setPointB() {
+        val pos = currentAbsPosition()
+        if (aMs == UNSET || pos <= aMs) { toast(getString(R.string.ab_need_order)); return }
+        bMs = pos
+        toast(getString(R.string.ab_hint_b, VideoAdapter.formatDuration(bMs)))
+        applyAb()
+    }
+
+    private fun clearAb() {
+        if (aMs == UNSET && bMs == UNSET) return
+        aMs = UNSET; bMs = UNSET
+        restoreClip()
+        toast(getString(R.string.ab_cleared))
+        updateChips(); updateMarkers()
+    }
+
+    private fun applyAb() {
+        if (aMs != UNSET && bMs != UNSET && bMs > aMs) enterClip() else restoreClip()
+        updateChips(); updateMarkers()
+    }
+
+    private fun enterClip() {
+        val idx = player.currentMediaItemIndex
+        if (idx !in queue.indices) return
+        player.replaceMediaItem(idx, clippedMediaItem(queue[idx], aMs, bMs))
+        clippedIndex = idx
+        isClipped = true
+        player.repeatMode = Player.REPEAT_MODE_ONE
+        player.seekTo(idx, 0L)
+        player.playWhenReady = true
+    }
+
+    private fun restoreClip() {
+        if (clippedIndex in queue.indices) {
+            val wasCurrent = clippedIndex == player.currentMediaItemIndex
+            val abs = if (wasCurrent) currentAbsPosition() else 0L
+            player.replaceMediaItem(clippedIndex, toMediaItem(queue[clippedIndex]))
+            if (wasCurrent) player.seekTo(clippedIndex, abs.coerceAtLeast(0L))
+        }
+        clippedIndex = -1
+        isClipped = false
+        player.repeatMode = userRepeatMode
+    }
+
+    private fun updateMarkers() {
+        if (fullDurationMs <= 0) { binding.seekBar.setMarkers(-1f, -1f); return }
+        val a = if (aMs != UNSET) aMs.toFloat() / fullDurationMs else -1f
+        val b = if (bMs != UNSET) bMs.toFloat() / fullDurationMs else -1f
+        binding.seekBar.setMarkers(a, b)
+    }
+
+    // ---------------- UI controls ----------------
+
+    private fun setupButtons() {
+        binding.btnBack.setOnClickListener { finish() }
+        binding.btnPlayPause.setOnClickListener { togglePlay(); poke() }
+        binding.btnRewind.setOnClickListener { seekBy(-SEEK_STEP_MS); poke() }
+        binding.btnForward.setOnClickListener { seekBy(SEEK_STEP_MS); poke() }
+        binding.btnPrev.setOnClickListener { prevItem(); poke() }
+        binding.btnNext.setOnClickListener { nextItem(); poke() }
+        binding.btnRotate.setOnClickListener { toggleOrientation(); poke() }
+        binding.btnPip.setOnClickListener { enterPip() }
+
+        binding.chipLoop.setOnClickListener { cycleRepeat(); poke() }
+        binding.chipShuffle.setOnClickListener { toggleShuffle(); poke() }
+        binding.chipSetA.setOnClickListener { setPointA(); poke() }
+        binding.chipSetB.setOnClickListener { setPointB(); poke() }
+        binding.chipClear.setOnClickListener { clearAb(); poke() }
+        binding.chipSpeed.setOnClickListener { cycleSpeed(); poke() }
+        binding.chipMute.setOnClickListener { toggleMute(); poke() }
+        binding.chipResize.setOnClickListener { cycleResize(); poke() }
+    }
+
+    private fun togglePlay() {
+        if (player.playbackState == Player.STATE_ENDED) { player.seekTo(0L); player.play() }
+        else player.playWhenReady = !player.playWhenReady
+    }
+
+    private fun cycleSpeed() {
+        speedIndex = (speedIndex + 1) % SPEEDS.size
+        player.setPlaybackSpeed(SPEEDS[speedIndex])
+        binding.chipSpeed.text = formatSpeed(SPEEDS[speedIndex])
+    }
+
+    private fun formatSpeed(s: Float): String =
+        if (s == s.toInt().toFloat()) "${s.toInt()}.0×" else "$s×"
+
+    private fun toggleMute() {
+        muted = !muted
+        player.volume = if (muted) 0f else 1f
+        binding.chipMute.setText(if (muted) R.string.unmute else R.string.mute)
+        binding.chipMute.setCompoundDrawablesRelativeWithIntrinsicBounds(
+            if (muted) R.drawable.ic_volume_off else R.drawable.ic_volume_up, 0, 0, 0
+        )
+    }
+
+    private fun cycleResize() {
+        resizeIndex = (resizeIndex + 1) % resizeModes.size
+        binding.playerView.resizeMode = resizeModes[resizeIndex]
+        binding.chipResize.text = resizeLabels[resizeIndex]
+    }
+
+    private fun toggleOrientation() {
+        requestedOrientation =
+            if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
+                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    }
+
+    private fun updateChips() {
+        binding.chipLoop.setCompoundDrawablesRelativeWithIntrinsicBounds(
+            if (userRepeatMode == Player.REPEAT_MODE_ONE) R.drawable.ic_loop_one
+            else R.drawable.ic_loop, 0, 0, 0
+        )
+        binding.chipLoop.setText(
+            when (userRepeatMode) {
+                Player.REPEAT_MODE_ONE -> R.string.repeat_one
+                Player.REPEAT_MODE_ALL -> R.string.repeat_all
+                else -> R.string.repeat_off
+            }
+        )
+        binding.chipLoop.alpha = if (userRepeatMode == Player.REPEAT_MODE_OFF) 0.55f else 1f
+        binding.chipShuffle.alpha = if (shuffle) 1f else 0.55f
+        binding.chipSetA.alpha = if (aMs != UNSET) 1f else 0.85f
+        binding.chipSetB.alpha = if (bMs != UNSET) 1f else 0.85f
+        binding.chipClear.alpha = if (aMs != UNSET || bMs != UNSET) 1f else 0.4f
+        binding.chipSpeed.text = formatSpeed(SPEEDS[speedIndex])
+    }
+
+    // ---------------- SeekBar ----------------
+
+    private fun setupSeekBar() {
+        binding.seekBar.max = 1000
+        binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                if (fromUser && fullDurationMs > 0) {
+                    val target = (progress / 1000f * fullDurationMs).toLong()
+                    binding.position.text = VideoAdapter.formatDuration(target)
+                }
+            }
+
+            override fun onStartTrackingTouch(sb: SeekBar) { isSeeking = true; handler.removeCallbacks(hideRunnable) }
+
+            override fun onStopTrackingTouch(sb: SeekBar) {
+                if (fullDurationMs > 0) {
+                    val target = (sb.progress / 1000f * fullDurationMs).toLong()
+                    seekToAbs(target)
+                }
+                isSeeking = false
+                scheduleHide()
+            }
+        })
+    }
+
+    private val progressRunnable = object : Runnable {
+        override fun run() {
+            if (!isSeeking && fullDurationMs > 0) {
+                val abs = currentAbsPosition()
+                binding.position.text = VideoAdapter.formatDuration(abs)
+                binding.seekBar.progress = (abs.toFloat() / fullDurationMs * 1000).toInt()
+            }
+            handler.postDelayed(this, 250)
+        }
+    }
+
+    private fun startProgress() {
+        handler.removeCallbacks(progressRunnable)
+        handler.post(progressRunnable)
+    }
+
+    // ---------------- Gestures + controls visibility ----------------
+
+    private fun setupGestures() {
+        val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean { gestureAxis = 0; return true }
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean { toggleControls(); return true }
+            override fun onDoubleTap(e: MotionEvent): Boolean { handleDoubleTap(e.x); return true }
+            override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dX: Float, dY: Float): Boolean {
+                if (e1 == null) return false
+                handleScroll(e1, e2); return true
+            }
+        })
+        detector.setIsLongpressEnabled(false)
+        binding.gestureLayer.setOnTouchListener { _, ev ->
+            detector.onTouchEvent(ev)
+            if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) endGesture()
+            true
+        }
+    }
+
+    private fun handleDoubleTap(x: Float) {
+        val w = binding.gestureLayer.width
+        when {
+            x < w / 3f -> { seekBy(-SEEK_STEP_MS); flashBadge("−10s") }
+            x > w * 2f / 3f -> { seekBy(SEEK_STEP_MS); flashBadge("+10s") }
+            else -> togglePlay()
+        }
+    }
+
+    private fun handleScroll(e1: MotionEvent, e2: MotionEvent) {
+        val w = binding.gestureLayer.width
+        val h = binding.gestureLayer.height
+        if (w == 0 || h == 0) return
+        if (gestureAxis == 0) {
+            val dx = abs(e2.x - e1.x); val dy = abs(e2.y - e1.y)
+            if (dx < 12 && dy < 12) return
+            gestureAxis = if (dx > dy) 1 else 2
+            if (gestureAxis == 1) {
+                seekStartPos = currentAbsPosition()
+            } else {
+                verticalRight = e1.x > w / 2f
+                startBrightness = currentBrightness()
+                startVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+            }
+        }
+        when (gestureAxis) {
+            1 -> {
+                val deltaMs = ((e2.x - e1.x) / w * 90_000f).toLong()
+                val target = (seekStartPos + deltaMs).coerceIn(0L, fullDurationMs.coerceAtLeast(1))
+                pendingSeekTarget = target
+                val sign = if (deltaMs >= 0) "+" else "−"
+                showBadge("${VideoAdapter.formatDuration(target)}  ($sign${abs(deltaMs) / 1000}s)")
+            }
+            2 -> {
+                val frac = (e1.y - e2.y) / h
+                if (!verticalRight) {
+                    val nb = (startBrightness + frac).coerceIn(0.02f, 1f)
+                    setBrightness(nb)
+                    showBadge("Brightness ${(nb * 100).roundToInt()}%")
+                } else {
+                    val maxV = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                    val nv = (startVolume + frac * maxV).roundToInt().coerceIn(0, maxV)
+                    audio.setStreamVolume(AudioManager.STREAM_MUSIC, nv, 0)
+                    showBadge("Volume ${(nv * 100 / maxV)}%")
+                }
+            }
+        }
+    }
+
+    private fun endGesture() {
+        if (gestureAxis == 1 && pendingSeekTarget >= 0) seekToAbs(pendingSeekTarget)
+        pendingSeekTarget = -1
+        gestureAxis = 0
+        handler.postDelayed({ binding.centerBadge.visibility = View.GONE }, 500)
+    }
+
+    private fun currentBrightness(): Float {
+        val b = window.attributes.screenBrightness
+        return if (b >= 0f) b else 0.5f
+    }
+
+    private fun setBrightness(v: Float) {
+        val lp = window.attributes; lp.screenBrightness = v; window.attributes = lp
+    }
+
+    private fun showBadge(text: String) {
+        binding.centerBadge.text = text
+        binding.centerBadge.visibility = View.VISIBLE
+    }
+
+    private fun flashBadge(text: String) {
+        showBadge(text)
+        handler.postDelayed({ binding.centerBadge.visibility = View.GONE }, 500)
+    }
+
+    private fun toggleControls() { if (controlsVisible) hideControls() else showControls() }
+
+    private fun showControls() {
+        controlsVisible = true
+        binding.controls.animate().alpha(1f).setDuration(160).withStartAction {
+            binding.controls.visibility = View.VISIBLE
+        }.start()
+        systemBars(true)
+        scheduleHide()
+    }
+
+    private fun hideControls() {
+        controlsVisible = false
+        binding.controls.animate().alpha(0f).setDuration(160).withEndAction {
+            binding.controls.visibility = View.INVISIBLE
+        }.start()
+        systemBars(false)
+    }
+
+    private val hideRunnable = Runnable { if (controlsVisible) hideControls() }
+
+    private fun scheduleHide() {
+        handler.removeCallbacks(hideRunnable)
+        if (player.isPlaying) handler.postDelayed(hideRunnable, HIDE_DELAY)
+    }
+
+    private fun poke() { if (controlsVisible) scheduleHide() }
+
+    private fun systemBars(show: Boolean) {
+        val controller = WindowInsetsControllerCompat(window, binding.root)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (show) controller.show(WindowInsetsCompat.Type.systemBars())
+        else controller.hide(WindowInsetsCompat.Type.systemBars())
+    }
+
+    private fun applyInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(binding.controls) { _, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            binding.topBar.updatePadding(left = bars.left, top = bars.top, right = bars.right)
+            binding.bottomBar.updatePadding(left = bars.left + dp(10), right = bars.right + dp(10), bottom = bars.bottom)
+            insets
+        }
+    }
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    // ---------------- Picture in Picture ----------------
+
+    private fun supportsPip(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+
+    private fun isInPipMode(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode
+
+    private fun pipAspect(): Rational {
+        val vs = player.videoSize
+        val w = if (vs.width > 0) vs.width else 16
+        val h = if (vs.height > 0) vs.height else 9
+        var r = Rational(w, h)
+        val max = Rational(239, 100); val min = Rational(100, 239)
+        if (r.toFloat() > max.toFloat()) r = max
+        if (r.toFloat() < min.toFloat()) r = min
+        return r
+    }
+
+    private fun buildPipParams(): PictureInPictureParams {
+        val playing = player.isPlaying
+        val iconRes = if (playing) R.drawable.ic_pause else R.drawable.ic_play
+        val control = if (playing) CONTROL_PAUSE else CONTROL_PLAY
+        val intent = Intent(PIP_ACTION).setPackage(packageName).putExtra(EXTRA_CONTROL, control)
+        val pi = PendingIntent.getBroadcast(
+            this, control, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val label = if (playing) getString(R.string.pause) else getString(R.string.play)
+        val action = RemoteAction(Icon.createWithResource(this, iconRes), label, label, pi)
+        return PictureInPictureParams.Builder()
+            .setAspectRatio(pipAspect())
+            .setActions(listOf(action))
+            .build()
+    }
+
+    private fun updatePipParams() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        try { setPictureInPictureParams(buildPipParams()) } catch (_: Throwable) {}
+    }
+
+    private fun enterPip() {
+        if (!supportsPip()) { toast(getString(R.string.pip_unsupported)); return }
+        try { enterPictureInPictureMode(buildPipParams()) } catch (_: Throwable) {
+            toast(getString(R.string.pip_unsupported))
+        }
+    }
+
+    private val pipReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, intent: Intent?) {
+            if (intent?.action != PIP_ACTION) return
+            when (intent.getIntExtra(EXTRA_CONTROL, 0)) {
+                CONTROL_PLAY -> player.play()
+                CONTROL_PAUSE -> player.pause()
+            }
+            updatePipParams()
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (supportsPip() && player.isPlaying && !isInPipMode()) enterPip()
+    }
+
+    override fun onPictureInPictureModeChanged(isInPip: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPip, newConfig)
+        if (isInPip) {
+            binding.controls.visibility = View.INVISIBLE
+            binding.gestureLayer.visibility = View.GONE
+            binding.centerBadge.visibility = View.GONE
+            ContextCompat.registerReceiver(
+                this, pipReceiver, IntentFilter(PIP_ACTION), ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            try { unregisterReceiver(pipReceiver) } catch (_: Throwable) {}
+            binding.gestureLayer.visibility = View.VISIBLE
+            controlsVisible = true
+            binding.controls.alpha = 1f
+            binding.controls.visibility = View.VISIBLE
+            scheduleHide()
+        }
+    }
+
+    // ---------------- Lifecycle ----------------
+
+    override fun onStop() {
+        super.onStop()
+        if (!isInPipMode()) player.pause()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacksAndMessages(null)
+        if (this::player.isInitialized) player.release()
+    }
+}

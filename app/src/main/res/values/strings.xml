@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Loopr</string>
+
+    <string name="permission_title">Let Loopr find your videos</string>
+    <string name="permission_body">Loopr needs access to the videos on your device so it can list and play them. Nothing leaves your phone.</string>
+    <string name="grant_access">Grant access</string>
+    <string name="open_settings">Open settings</string>
+    <string name="no_videos">No videos found on this device.</string>
+    <string name="refresh">Refresh</string>
+
+    <string name="theme">Theme</string>
+    <string name="theme_system">Follow system</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="back">Back</string>
+    <string name="loop_off">Loop off</string>
+    <string name="loop_one">Loop video</string>
+    <string name="loop_ab">A–B loop</string>
+    <string name="set_a">Set A</string>
+    <string name="set_b">Set B</string>
+    <string name="clear_ab">Clear A–B</string>
+    <string name="speed">Speed</string>
+    <string name="mute">Mute</string>
+    <string name="unmute">Unmute</string>
+    <string name="resize">Resize</string>
+    <string name="rotate">Rotate</string>
+    <string name="pip">Window mode</string>
+    <string name="more">More</string>
+    <string name="rewind10">Rewind 10 seconds</string>
+    <string name="forward10">Forward 10 seconds</string>
+
+    <string name="ab_hint_a">Point A set at %1$s</string>
+    <string name="ab_hint_b">Point B set at %1$s</string>
+    <string name="ab_need_order">Point B must be after point A</string>
+    <string name="ab_cleared">A–B loop cleared</string>
+    <string name="ab_active">A–B loop on</string>
+    <string name="loop_one_on">Looping this video</string>
+    <string name="loop_off_msg">Looping off</string>
+    <string name="pip_unsupported">Window mode isn\'t supported on this device</string>
+
+    <string name="next">Next</string>
+    <string name="previous">Previous</string>
+    <string name="shuffle">Shuffle</string>
+    <string name="repeat_off">No repeat</string>
+    <string name="repeat_one">Repeat one</string>
+    <string name="repeat_all">Repeat all</string>
+    <string name="repeat_off_msg">Repeat off — stops at the end</string>
+    <string name="repeat_one_msg">Repeating this video</string>
+    <string name="repeat_all_msg">Playing through your videos</string>
+    <string name="shuffle_on">Shuffle on</string>
+    <string name="shuffle_off">Shuffle off</string>
+    <string name="end_of_queue">End of the list</string>
+</resources>

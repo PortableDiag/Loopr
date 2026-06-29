@@ -1,0 +1,293 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/black"
+    android:keepScreenOn="true">
+
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/playerView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:use_controller="false"
+        app:surface_type="surface_view"
+        app:resize_mode="fit"
+        app:show_buffering="never"
+        android:background="@color/black" />
+
+    <!-- Gesture layer: receives taps / double-taps / swipes in empty areas -->
+    <View
+        android:id="@+id/gestureLayer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="true"
+        android:focusable="true" />
+
+    <!-- Controls overlay (non-clickable container; only its children intercept) -->
+    <FrameLayout
+        android:id="@+id/controls"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="128dp"
+            android:layout_gravity="top"
+            android:background="@drawable/bg_scrim_top" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="220dp"
+            android:layout_gravity="bottom"
+            android:background="@drawable/bg_scrim_bottom" />
+
+        <!-- Top bar -->
+        <LinearLayout
+            android:id="@+id/topBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingHorizontal="6dp"
+            android:paddingTop="8dp">
+
+            <ImageButton
+                android:id="@+id/btnBack"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_back"
+                app:tint="@color/white"
+                android:contentDescription="@string/back" />
+
+            <TextView
+                android:id="@+id/title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginHorizontal="6dp"
+                android:maxLines="1"
+                android:ellipsize="marquee"
+                android:textColor="@color/white"
+                android:textSize="15sp"
+                android:fontFamily="sans-serif-medium"
+                android:text="" />
+
+            <ImageButton
+                android:id="@+id/btnPip"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_pip"
+                app:tint="@color/white"
+                android:contentDescription="@string/pip" />
+
+            <ImageButton
+                android:id="@+id/btnRotate"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_rotate"
+                app:tint="@color/white"
+                android:contentDescription="@string/rotate" />
+        </LinearLayout>
+
+        <!-- Center transport -->
+        <LinearLayout
+            android:id="@+id/centerControls"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <ImageButton
+                android:id="@+id/btnPrev"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_skip_prev"
+                app:tint="@color/white"
+                android:contentDescription="@string/previous" />
+
+            <ImageButton
+                android:id="@+id/btnRewind"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:layout_marginStart="6dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_rewind"
+                app:tint="@color/white"
+                android:contentDescription="@string/rewind10" />
+
+            <ImageButton
+                android:id="@+id/btnPlayPause"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:layout_marginHorizontal="14dp"
+                android:background="@drawable/bg_center_btn"
+                android:src="@drawable/ic_play"
+                app:tint="@color/white"
+                android:scaleType="fitCenter"
+                android:padding="15dp"
+                android:contentDescription="@string/play" />
+
+            <ImageButton
+                android:id="@+id/btnForward"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:layout_marginEnd="6dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_forward"
+                app:tint="@color/white"
+                android:contentDescription="@string/forward10" />
+
+            <ImageButton
+                android:id="@+id/btnNext"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_skip_next"
+                app:tint="@color/white"
+                android:contentDescription="@string/next" />
+        </LinearLayout>
+
+        <!-- Bottom bar -->
+        <LinearLayout
+            android:id="@+id/bottomBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:orientation="vertical"
+            android:paddingHorizontal="10dp"
+            android:paddingBottom="8dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/position"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="52dp"
+                    android:gravity="center"
+                    android:textColor="@color/white"
+                    android:textSize="12sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="0:00" />
+
+                <com.loopr.player.AbSeekBar
+                    android:id="@+id/seekBar"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:paddingHorizontal="6dp"
+                    android:maxHeight="3dp"
+                    android:progressTint="@color/brand_light"
+                    android:progressBackgroundTint="#66FFFFFF"
+                    android:thumbTint="@color/brand_light"
+                    android:splitTrack="false" />
+
+                <TextView
+                    android:id="@+id/duration"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="52dp"
+                    android:gravity="center"
+                    android:textColor="@color/white"
+                    android:textSize="12sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="0:00" />
+            </LinearLayout>
+
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:scrollbars="none"
+                android:overScrollMode="never">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingVertical="4dp">
+
+                    <TextView
+                        android:id="@+id/chipLoop"
+                        style="@style/Chip"
+                        android:drawableStart="@drawable/ic_loop"
+                        android:text="@string/repeat_all" />
+
+                    <TextView
+                        android:id="@+id/chipShuffle"
+                        style="@style/Chip"
+                        android:drawableStart="@drawable/ic_shuffle"
+                        android:text="@string/shuffle" />
+
+                    <TextView
+                        android:id="@+id/chipSetA"
+                        style="@style/Chip"
+                        android:text="@string/set_a" />
+
+                    <TextView
+                        android:id="@+id/chipSetB"
+                        style="@style/Chip"
+                        android:text="@string/set_b" />
+
+                    <TextView
+                        android:id="@+id/chipClear"
+                        style="@style/Chip"
+                        android:text="@string/clear_ab" />
+
+                    <TextView
+                        android:id="@+id/chipSpeed"
+                        style="@style/Chip"
+                        android:text="1.0×" />
+
+                    <TextView
+                        android:id="@+id/chipMute"
+                        style="@style/Chip"
+                        android:drawableStart="@drawable/ic_volume_up"
+                        android:text="@string/mute" />
+
+                    <TextView
+                        android:id="@+id/chipResize"
+                        style="@style/Chip"
+                        android:drawableStart="@drawable/ic_aspect"
+                        android:text="Fit" />
+                </LinearLayout>
+            </HorizontalScrollView>
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- Center gesture feedback badge -->
+    <TextView
+        android:id="@+id/centerBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_gesture_badge"
+        android:paddingHorizontal="18dp"
+        android:paddingVertical="12dp"
+        android:textColor="@color/white"
+        android:textSize="16sp"
+        android:fontFamily="sans-serif-medium"
+        android:visibility="gone"
+        android:text="" />
+
+    <ProgressBar
+        android:id="@+id/buffering"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="center"
+        android:indeterminateTint="@color/white"
+        android:visibility="gone" />
+</FrameLayout>
