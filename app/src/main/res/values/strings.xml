@@ -10,6 +10,10 @@
     <string name="refresh">Refresh</string>
 
     <string name="theme">Theme</string>
+    <string name="multiple_players">Multiple players</string>
+    <string name="multi_chip">Multi</string>
+    <string name="multi_on">Each video opens its own player</string>
+    <string name="multi_off">Videos play in a single player</string>
     <string name="theme_system">Follow system</string>
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>

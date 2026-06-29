@@ -8,7 +8,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -24,6 +27,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        /** When set, each picked video opens in its own player instead of reusing one. */
+        const val KEY_MULTI_INSTANCE = "multi_instance"
+    }
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var adapter: VideoAdapter
@@ -47,7 +55,6 @@ class MainActivity : AppCompatActivity() {
 
         setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayShowTitleEnabled(false)
-        binding.toolbar.setOnMenuItemClickListener { onMenu(it.itemId) }
 
         // Bottom inset padding for the grid so last row clears the nav bar.
         ViewCompat.setOnApplyWindowInsetsListener(binding.recycler) { v, insets ->
@@ -81,10 +88,38 @@ class MainActivity : AppCompatActivity() {
         binding.emptyView.visibility = View.GONE
     }
 
-    private fun onMenu(id: Int): Boolean = when (id) {
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.menu_main, menu)
+        return true
+    }
+
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        menu.findItem(R.id.action_multi)?.isChecked = multiInstanceEnabled()
+        return super.onPrepareOptionsMenu(menu)
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean =
+        if (onMenu(item)) true else super.onOptionsItemSelected(item)
+
+    private fun onMenu(item: MenuItem): Boolean = when (item.itemId) {
         R.id.action_refresh -> { if (hasPermission()) loadVideos(); true }
         R.id.action_theme -> { showThemeDialog(); true }
+        R.id.action_multi -> { toggleMultiInstance(item); true }
         else -> false
+    }
+
+    private fun multiInstanceEnabled(): Boolean =
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE)
+            .getBoolean(KEY_MULTI_INSTANCE, false)
+
+    private fun toggleMultiInstance(item: MenuItem) {
+        val enabled = !multiInstanceEnabled()
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_MULTI_INSTANCE, enabled).apply()
+        item.isChecked = enabled
+        Toast.makeText(
+            this, if (enabled) R.string.multi_on else R.string.multi_off, Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun showThemeDialog() {
@@ -110,6 +145,17 @@ class MainActivity : AppCompatActivity() {
             data = item.uri
             putExtra(PlayerActivity.EXTRA_TITLE, item.title)
             putExtra(PlayerActivity.EXTRA_INDEX, position)
+            if (multiInstanceEnabled()) {
+                // Each video gets its own task/instance, kept separate in recents.
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                        Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+                )
+            } else {
+                // Reuse the single live player, swapping in the new video.
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
         }
         startActivity(intent)
     }

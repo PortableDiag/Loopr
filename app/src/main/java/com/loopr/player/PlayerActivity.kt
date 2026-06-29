@@ -20,6 +20,7 @@ import android.os.Looper
 import android.util.Rational
 import android.view.GestureDetector
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.widget.SeekBar
 import android.widget.Toast
@@ -63,13 +64,22 @@ class PlayerActivity : AppCompatActivity() {
 
         private val SPEEDS = floatArrayOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
         private const val SEEK_STEP_MS = 10_000L
+        // A-B loop boundary poll; small enough that the loop-back is imperceptible.
+        private const val LOOP_POLL_MS = 30L
         private const val UNSET = Long.MIN_VALUE
         private const val HIDE_DELAY = 3500L
+
+        private const val MIN_SCALE = 1f
+        private const val MAX_SCALE = 5f
+
+        /** Live player instances, so we can collapse to one when multi-instance is off. */
+        private val liveInstances = mutableListOf<PlayerActivity>()
     }
 
     private lateinit var binding: ActivityPlayerBinding
     private lateinit var player: ExoPlayer
     private lateinit var audio: AudioManager
+    private lateinit var scaleDetector: ScaleGestureDetector
     private val handler = Handler(Looper.getMainLooper())
 
     private var queue: List<VideoItem> = emptyList()
@@ -82,8 +92,6 @@ class PlayerActivity : AppCompatActivity() {
     // A-B loop (applies to the current item only)
     private var aMs = UNSET
     private var bMs = UNSET
-    private var isClipped = false
-    private var clippedIndex = -1
     private var fullDurationMs = 0L
 
     private var speedIndex = 3
@@ -107,10 +115,20 @@ class PlayerActivity : AppCompatActivity() {
     private var seekStartPos = 0L
     private var pendingSeekTarget = -1L
 
+    // pinch-to-zoom state
+    private var videoScale = 1f
+    private var videoTransX = 0f
+    private var videoTransY = 0f
+    private var lastFocusX = 0f
+    private var lastFocusY = 0f
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityPlayerBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        liveInstances.add(this)
+        enforceInstancePolicy()
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -159,13 +177,6 @@ class PlayerActivity : AppCompatActivity() {
             .setMediaMetadata(MediaMetadata.Builder().setTitle(v.title).build())
             .build()
 
-    private fun clippedMediaItem(v: VideoItem, a: Long, b: Long): MediaItem =
-        toMediaItem(v).buildUpon()
-            .setClippingConfiguration(
-                MediaItem.ClippingConfiguration.Builder()
-                    .setStartPositionMs(a).setEndPositionMs(b).build()
-            ).build()
-
     private fun setupPlayer() {
         player = ExoPlayer.Builder(this).build()
         binding.playerView.player = player
@@ -175,7 +186,7 @@ class PlayerActivity : AppCompatActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 binding.buffering.visibility =
                     if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
-                if (state == Player.STATE_READY && !isClipped) {
+                if (state == Player.STATE_READY) {
                     val d = player.duration
                     if (d > 0) {
                         fullDurationMs = d
@@ -190,12 +201,14 @@ class PlayerActivity : AppCompatActivity() {
                 if (idx != currentVideoIndex) {
                     // Moved to a different video; A-B belonged to the previous one.
                     currentVideoIndex = idx
-                    aMs = UNSET; bMs = UNSET; isClipped = false; clippedIndex = -1
+                    aMs = UNSET; bMs = UNSET
                     fullDurationMs = 0
                     binding.duration.text = "0:00"
                     binding.position.text = "0:00"
                     binding.seekBar.progress = 0
+                    updateLoopWatcher()
                     updateChips(); updateMarkers()
+                    resetZoom()
                 }
                 binding.title.text = item?.mediaMetadata?.title
                     ?: queue.getOrNull(idx)?.title ?: ""
@@ -220,6 +233,12 @@ class PlayerActivity : AppCompatActivity() {
             }
         })
 
+        loadQueueIntoPlayer()
+        startProgress()
+    }
+
+    /** Pushes the current [queue]/[startIndex] into the player and begins playback. */
+    private fun loadQueueIntoPlayer() {
         player.setMediaItems(queue.map { toMediaItem(it) }, startIndex, 0L)
         player.repeatMode = userRepeatMode
         player.shuffleModeEnabled = shuffle
@@ -227,19 +246,52 @@ class PlayerActivity : AppCompatActivity() {
         player.volume = if (muted) 0f else 1f
         player.prepare()
         player.playWhenReady = true
-        startProgress()
     }
 
-    private fun currentAbsPosition(): Long =
-        if (isClipped && aMs != UNSET) aMs + player.currentPosition else player.currentPosition
+    /** Reused-player path: a new video was picked while this instance is alive (multi-instance off). */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        enforceInstancePolicy()
+        if (!buildQueue()) return
+        aMs = UNSET; bMs = UNSET
+        fullDurationMs = 0
+        binding.position.text = "0:00"
+        binding.duration.text = "0:00"
+        binding.seekBar.progress = 0
+        binding.title.text = queue[startIndex].title
+        binding.title.isSelected = true
+        resetZoom()
+        updateLoopWatcher()
+        loadQueueIntoPlayer()
+        updateChips(); updateMarkers()
+        showControls()
+    }
+
+    private fun multiInstanceEnabled(): Boolean =
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE)
+            .getBoolean(MainActivity.KEY_MULTI_INSTANCE, false)
+
+    /** When multi-instance is off, leave only this player alive (covers external launches too). */
+    private fun enforceInstancePolicy() {
+        if (multiInstanceEnabled()) return
+        liveInstances.toList().forEach { if (it !== this && !it.isFinishing) it.finish() }
+    }
+
+    private fun toggleMultiInstance() {
+        val enabled = !multiInstanceEnabled()
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE).edit()
+            .putBoolean(MainActivity.KEY_MULTI_INSTANCE, enabled).apply()
+        if (!enabled) enforceInstancePolicy()
+        updateChips()
+        toast(getString(if (enabled) R.string.multi_on else R.string.multi_off))
+    }
+
+    private fun currentAbsPosition(): Long = player.currentPosition
 
     private fun seekToAbs(absMs: Long) {
-        if (isClipped) {
-            player.seekTo(absMs.coerceIn(aMs, bMs) - aMs)
-        } else {
-            val max = if (fullDurationMs > 0) fullDurationMs else absMs
-            player.seekTo(absMs.coerceIn(0L, max))
-        }
+        val max = if (fullDurationMs > 0) fullDurationMs else absMs
+        player.seekTo(absMs.coerceIn(0L, max))
     }
 
     private fun seekBy(deltaMs: Long) = seekToAbs(currentAbsPosition() + deltaMs)
@@ -247,14 +299,12 @@ class PlayerActivity : AppCompatActivity() {
     // ---------------- Queue navigation ----------------
 
     private fun nextItem() {
-        restoreClip()
         if (player.hasNextMediaItem()) player.seekToNextMediaItem()
         else toast(getString(R.string.end_of_queue))
         player.play()
     }
 
     private fun prevItem() {
-        restoreClip()
         when {
             player.currentPosition > 3000 -> player.seekTo(0)
             player.hasPreviousMediaItem() -> player.seekToPreviousMediaItem()
@@ -267,7 +317,7 @@ class PlayerActivity : AppCompatActivity() {
         userRepeatMode = (userRepeatMode + 1) % 3
         getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE).edit()
             .putInt(KEY_REPEAT, userRepeatMode).apply()
-        if (!isClipped) player.repeatMode = userRepeatMode
+        player.repeatMode = userRepeatMode
         updateChips()
         toast(getString(
             when (userRepeatMode) {
@@ -307,37 +357,36 @@ class PlayerActivity : AppCompatActivity() {
     private fun clearAb() {
         if (aMs == UNSET && bMs == UNSET) return
         aMs = UNSET; bMs = UNSET
-        restoreClip()
+        updateLoopWatcher()
         toast(getString(R.string.ab_cleared))
         updateChips(); updateMarkers()
     }
 
     private fun applyAb() {
-        if (aMs != UNSET && bMs != UNSET && bMs > aMs) enterClip() else restoreClip()
+        updateLoopWatcher()
         updateChips(); updateMarkers()
     }
 
-    private fun enterClip() {
-        val idx = player.currentMediaItemIndex
-        if (idx !in queue.indices) return
-        player.replaceMediaItem(idx, clippedMediaItem(queue[idx], aMs, bMs))
-        clippedIndex = idx
-        isClipped = true
-        player.repeatMode = Player.REPEAT_MODE_ONE
-        player.seekTo(idx, 0L)
-        player.playWhenReady = true
+    /** True while a valid A-B range is set on the current item. */
+    private fun abActive(): Boolean = aMs != UNSET && bMs != UNSET && bMs > aMs
+
+    /** Polls playback while an A-B range is set and seeks back to A on reaching B. */
+    private val loopRunnable = object : Runnable {
+        override fun run() {
+            if (!isSeeking && abActive()) {
+                val ended = player.playbackState == Player.STATE_ENDED
+                if (player.currentPosition >= bMs || ended) {
+                    player.seekTo(aMs)
+                    if (ended) player.play()
+                }
+            }
+            handler.postDelayed(this, LOOP_POLL_MS)
+        }
     }
 
-    private fun restoreClip() {
-        if (clippedIndex in queue.indices) {
-            val wasCurrent = clippedIndex == player.currentMediaItemIndex
-            val abs = if (wasCurrent) currentAbsPosition() else 0L
-            player.replaceMediaItem(clippedIndex, toMediaItem(queue[clippedIndex]))
-            if (wasCurrent) player.seekTo(clippedIndex, abs.coerceAtLeast(0L))
-        }
-        clippedIndex = -1
-        isClipped = false
-        player.repeatMode = userRepeatMode
+    private fun updateLoopWatcher() {
+        handler.removeCallbacks(loopRunnable)
+        if (abActive()) handler.post(loopRunnable)
     }
 
     private fun updateMarkers() {
@@ -361,6 +410,7 @@ class PlayerActivity : AppCompatActivity() {
 
         binding.chipLoop.setOnClickListener { cycleRepeat(); poke() }
         binding.chipShuffle.setOnClickListener { toggleShuffle(); poke() }
+        binding.chipMulti.setOnClickListener { toggleMultiInstance(); poke() }
         binding.chipSetA.setOnClickListener { setPointA(); poke() }
         binding.chipSetB.setOnClickListener { setPointB(); poke() }
         binding.chipClear.setOnClickListener { clearAb(); poke() }
@@ -419,6 +469,7 @@ class PlayerActivity : AppCompatActivity() {
         )
         binding.chipLoop.alpha = if (userRepeatMode == Player.REPEAT_MODE_OFF) 0.55f else 1f
         binding.chipShuffle.alpha = if (shuffle) 1f else 0.55f
+        binding.chipMulti.alpha = if (multiInstanceEnabled()) 1f else 0.55f
         binding.chipSetA.alpha = if (aMs != UNSET) 1f else 0.85f
         binding.chipSetB.alpha = if (bMs != UNSET) 1f else 0.85f
         binding.chipClear.alpha = if (aMs != UNSET || bMs != UNSET) 1f else 0.4f
@@ -474,19 +525,70 @@ class PlayerActivity : AppCompatActivity() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean { toggleControls(); return true }
             override fun onDoubleTap(e: MotionEvent): Boolean { handleDoubleTap(e.x); return true }
             override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dX: Float, dY: Float): Boolean {
-                if (e1 == null) return false
+                if (e1 == null || scaleDetector.isInProgress) return false
+                // When zoomed in, a one-finger drag pans the video instead of seeking.
+                if (videoScale > 1f) { panBy(dX, dY); return true }
                 handleScroll(e1, e2); return true
             }
         })
         detector.setIsLongpressEnabled(false)
+
+        scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(d: ScaleGestureDetector): Boolean {
+                lastFocusX = d.focusX; lastFocusY = d.focusY
+                return true
+            }
+            override fun onScale(d: ScaleGestureDetector): Boolean {
+                videoScale = (videoScale * d.scaleFactor).coerceIn(MIN_SCALE, MAX_SCALE)
+                // Pan along with the pinch focus so the content tracks the fingers.
+                videoTransX += d.focusX - lastFocusX
+                videoTransY += d.focusY - lastFocusY
+                lastFocusX = d.focusX; lastFocusY = d.focusY
+                applyVideoTransform()
+                showBadge("${(videoScale * 100).roundToInt()}%")
+                return true
+            }
+            override fun onScaleEnd(d: ScaleGestureDetector) {
+                if (videoScale <= MIN_SCALE) resetZoom()
+                handler.postDelayed({ binding.centerBadge.visibility = View.GONE }, 500)
+            }
+        })
+        scaleDetector.isQuickScaleEnabled = false
+
         binding.gestureLayer.setOnTouchListener { _, ev ->
-            detector.onTouchEvent(ev)
+            scaleDetector.onTouchEvent(ev)
+            if (!scaleDetector.isInProgress) detector.onTouchEvent(ev)
             if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) endGesture()
             true
         }
     }
 
+    private fun panBy(dX: Float, dY: Float) {
+        videoTransX -= dX
+        videoTransY -= dY
+        applyVideoTransform()
+    }
+
+    /** Applies the current zoom scale + pan offset to the video surface, keeping edges in bounds. */
+    private fun applyVideoTransform() {
+        val maxX = binding.playerView.width * (videoScale - 1f) / 2f
+        val maxY = binding.playerView.height * (videoScale - 1f) / 2f
+        videoTransX = videoTransX.coerceIn(-maxX, maxX)
+        videoTransY = videoTransY.coerceIn(-maxY, maxY)
+        binding.playerView.scaleX = videoScale
+        binding.playerView.scaleY = videoScale
+        binding.playerView.translationX = videoTransX
+        binding.playerView.translationY = videoTransY
+    }
+
+    private fun resetZoom() {
+        videoScale = 1f; videoTransX = 0f; videoTransY = 0f
+        applyVideoTransform()
+    }
+
     private fun handleDoubleTap(x: Float) {
+        // While zoomed, a double-tap snaps back to fit instead of seeking.
+        if (videoScale > 1f) { resetZoom(); flashBadge("100%"); return }
         val w = binding.gestureLayer.width
         when {
             x < w / 3f -> { seekBy(-SEEK_STEP_MS); flashBadge("−10s") }
@@ -677,6 +779,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun onPictureInPictureModeChanged(isInPip: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPip, newConfig)
         if (isInPip) {
+            resetZoom()
             binding.controls.visibility = View.INVISIBLE
             binding.gestureLayer.visibility = View.GONE
             binding.centerBadge.visibility = View.GONE
@@ -697,11 +800,14 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
-        if (!isInPipMode()) player.pause()
+        // With multiple players enabled, backgrounded instances keep playing so several
+        // videos can run at once; otherwise pause when we leave the foreground (unless in PiP).
+        if (!isInPipMode() && !multiInstanceEnabled()) player.pause()
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        liveInstances.remove(this)
         handler.removeCallbacksAndMessages(null)
         if (this::player.isInitialized) player.release()
     }

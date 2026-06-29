@@ -27,7 +27,6 @@
             android:name=".PlayerActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|navigation|keyboard|density|fontScale"
-            android:launchMode="singleTask"
             android:supportsPictureInPicture="true"
             android:theme="@style/Theme.Loopr.Player">
             <intent-filter>
