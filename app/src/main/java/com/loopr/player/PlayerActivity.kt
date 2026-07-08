@@ -16,10 +16,11 @@ import android.graphics.drawable.Icon
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
-import android.provider.MediaStore
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.util.Rational
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -238,28 +239,69 @@ class PlayerActivity : AppCompatActivity() {
         return list to startIdx
     }
 
-    /** Finds the opened [uri]'s MediaStore row, returning its (_ID, BUCKET_ID) or null. */
+    /**
+     * Finds the opened [uri]'s MediaStore row, returning its (_ID, BUCKET_ID) or null. Handles
+     * MediaStore uris, Storage-Access-Framework / documents uris (e.g. opened from Downloads),
+     * and file:// uris by trying id → display name (+ size) → path in turn.
+     */
     private fun locateInMediaStore(uri: Uri, collection: Uri): Pair<Long, Long>? {
         val proj = arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.BUCKET_ID)
 
-        // Already a MediaStore video uri — look it up by id.
+        // 1) Already a MediaStore video uri — look it up by id.
         if (uri.authority == MediaStore.AUTHORITY) {
             val id = runCatching { ContentUris.parseId(uri) }.getOrNull()
             if (id != null && id > 0) {
-                contentResolver.query(
-                    collection, proj, "${MediaStore.Video.Media._ID} = ?",
-                    arrayOf(id.toString()), null
-                )?.use { c -> if (c.moveToFirst()) return c.getLong(0) to c.getLong(1) }
+                queryRow(collection, proj, "${MediaStore.Video.Media._ID} = ?", arrayOf(id.toString()))
+                    ?.let { return it }
             }
         }
 
-        // Otherwise resolve a file path and match by DATA.
-        val path = resolvePath(uri) ?: return null
-        contentResolver.query(
-            collection, proj, "${MediaStore.Video.Media.DATA} = ?",
-            arrayOf(path), null
-        )?.use { c -> if (c.moveToFirst()) return c.getLong(0) to c.getLong(1) }
+        // 2) Match by display name (+ size to disambiguate). Works for SAF/Downloads uris that
+        //    don't expose _data and aren't under the "media" authority.
+        val (name, size) = queryNameSize(uri)
+        if (!name.isNullOrEmpty()) {
+            if (size != null && size > 0) {
+                queryRow(
+                    collection, proj,
+                    "${MediaStore.Video.Media.DISPLAY_NAME} = ? AND ${MediaStore.Video.Media.SIZE} = ?",
+                    arrayOf(name, size.toString())
+                )?.let { return it }
+            }
+            queryRow(collection, proj, "${MediaStore.Video.Media.DISPLAY_NAME} = ?", arrayOf(name))
+                ?.let { return it }
+        }
+
+        // 3) Last resort: match by absolute path (file:// or a provider that exposes _data).
+        resolvePath(uri)?.let { path ->
+            queryRow(collection, proj, "${MediaStore.Video.Media.DATA} = ?", arrayOf(path))
+                ?.let { return it }
+        }
         return null
+    }
+
+    /** Runs a query and returns the first row's (_ID, BUCKET_ID) pair, or null. */
+    private fun queryRow(uri: Uri, proj: Array<String>, sel: String, args: Array<String>): Pair<Long, Long>? {
+        contentResolver.query(uri, proj, sel, args, null)?.use { c ->
+            if (c.moveToFirst()) return c.getLong(0) to c.getLong(1)
+        }
+        return null
+    }
+
+    /** Display name + size for [uri] via OpenableColumns (works across content:// providers). */
+    private fun queryNameSize(uri: Uri): Pair<String?, Long?> {
+        if (uri.scheme == "file") return uri.lastPathSegment to null
+        return runCatching {
+            contentResolver.query(
+                uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null
+            )?.use { c ->
+                if (!c.moveToFirst()) return null to null
+                val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val si = c.getColumnIndex(OpenableColumns.SIZE)
+                val n = if (ni >= 0) c.getString(ni) else null
+                val s = if (si >= 0 && !c.isNull(si)) c.getLong(si) else null
+                n to s
+            } ?: (null to null)
+        }.getOrElse { null to null }
     }
 
     /** Best-effort absolute path for [uri]: direct for file://, else the DATA column. */
