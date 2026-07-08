@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2 — 2026-07-08
+- Opening a video from a file manager or another app now enqueues the **whole folder** (sorted by name), so ⏮ / ⏭ move through the other videos in that folder instead of dead‑ending on a single file. Falls back to just the opened file when media permission hasn't been granted or the source can't be located.
+- **Repeat One** now restarts the current video on ⏮ / ⏭, matching how the mode already behaves at the end of a video.
+
+## 1.1 — 2026-06-29
+- Added an optional **multiple‑players** mode: each picked video can open in its own instance so several videos can play at once. Off by default; backgrounded players keep playing while it's on.
+
 ## 1.0 — 2026-06-28
 First release.
 
