@@ -1,9 +1,11 @@
 package com.loopr.player
 
+import android.Manifest
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
 import android.content.BroadcastReceiver
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -14,6 +16,7 @@ import android.graphics.drawable.Icon
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
+import android.provider.MediaStore
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -152,7 +155,7 @@ class PlayerActivity : AppCompatActivity() {
         showControls()
     }
 
-    /** Resolves the play queue from the static handoff, or a single external VIEW intent. */
+    /** Resolves the play queue from the static handoff, or an external VIEW intent. */
     private fun buildQueue(): Boolean {
         val idx = intent.getIntExtra(EXTRA_INDEX, -1)
         if (PlayQueue.items.isNotEmpty() && idx >= 0) {
@@ -162,11 +165,116 @@ class PlayerActivity : AppCompatActivity() {
             val uri = intent.data ?: return false
             val title = intent.getStringExtra(EXTRA_TITLE)
                 ?: uri.lastPathSegment ?: "Video"
-            queue = listOf(VideoItem(0, uri, title, 0, 0, 0, 0, ""))
-            startIndex = 0
+            // Gather the other videos in the same folder so Next/Prev can traverse them;
+            // fall back to just this file if we can't (no media permission, unknown source).
+            val folder = runCatching { buildFolderQueue(uri) }.getOrNull()
+            if (folder != null && folder.first.size > 1) {
+                queue = folder.first
+                startIndex = folder.second
+            } else {
+                queue = listOf(VideoItem(0, uri, title, 0, 0, 0, 0, ""))
+                startIndex = 0
+            }
         }
         currentVideoIndex = startIndex
         return true
+    }
+
+    /**
+     * Resolves the folder holding the externally-opened [uri] and returns every video in it
+     * (sorted by name) paired with the index of the opened file, so Next/Prev traverse the
+     * folder. Returns null when we lack media permission or can't locate the file in MediaStore.
+     */
+    private fun buildFolderQueue(uri: Uri): Pair<List<VideoItem>, Int>? {
+        if (!hasMediaPermission()) return null
+
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+
+        val (openedId, bucketId) = locateInMediaStore(uri, collection) ?: return null
+
+        val projection = arrayOf(
+            MediaStore.Video.Media._ID,
+            MediaStore.Video.Media.DISPLAY_NAME,
+            MediaStore.Video.Media.DURATION,
+            MediaStore.Video.Media.SIZE,
+            MediaStore.Video.Media.WIDTH,
+            MediaStore.Video.Media.HEIGHT,
+            MediaStore.Video.Media.BUCKET_DISPLAY_NAME
+        )
+        val selection = "${MediaStore.Video.Media.BUCKET_ID} = ?"
+        val args = arrayOf(bucketId.toString())
+        val sort = "${MediaStore.Video.Media.DISPLAY_NAME} COLLATE NOCASE ASC"
+
+        val list = ArrayList<VideoItem>()
+        var startIdx = -1
+        contentResolver.query(collection, projection, selection, args, sort)?.use { c ->
+            val idCol = c.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
+            val nameCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+            val durCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
+            val sizeCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
+            val wCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
+            val hCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
+            val bucketCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+            while (c.moveToNext()) {
+                val id = c.getLong(idCol)
+                if (id == openedId) startIdx = list.size
+                list.add(
+                    VideoItem(
+                        id = id,
+                        uri = ContentUris.withAppendedId(collection, id),
+                        title = c.getString(nameCol) ?: "Video",
+                        durationMs = c.getLong(durCol),
+                        sizeBytes = c.getLong(sizeCol),
+                        width = c.getInt(wCol),
+                        height = c.getInt(hCol),
+                        bucket = c.getString(bucketCol) ?: ""
+                    )
+                )
+            }
+        }
+        if (startIdx < 0 || list.isEmpty()) return null
+        return list to startIdx
+    }
+
+    /** Finds the opened [uri]'s MediaStore row, returning its (_ID, BUCKET_ID) or null. */
+    private fun locateInMediaStore(uri: Uri, collection: Uri): Pair<Long, Long>? {
+        val proj = arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.BUCKET_ID)
+
+        // Already a MediaStore video uri — look it up by id.
+        if (uri.authority == MediaStore.AUTHORITY) {
+            val id = runCatching { ContentUris.parseId(uri) }.getOrNull()
+            if (id != null && id > 0) {
+                contentResolver.query(
+                    collection, proj, "${MediaStore.Video.Media._ID} = ?",
+                    arrayOf(id.toString()), null
+                )?.use { c -> if (c.moveToFirst()) return c.getLong(0) to c.getLong(1) }
+            }
+        }
+
+        // Otherwise resolve a file path and match by DATA.
+        val path = resolvePath(uri) ?: return null
+        contentResolver.query(
+            collection, proj, "${MediaStore.Video.Media.DATA} = ?",
+            arrayOf(path), null
+        )?.use { c -> if (c.moveToFirst()) return c.getLong(0) to c.getLong(1) }
+        return null
+    }
+
+    /** Best-effort absolute path for [uri]: direct for file://, else the DATA column. */
+    private fun resolvePath(uri: Uri): String? {
+        if (uri.scheme == "file") return uri.path
+        return runCatching {
+            contentResolver.query(uri, arrayOf(MediaStore.Video.Media.DATA), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull()
+    }
+
+    private fun hasMediaPermission(): Boolean {
+        val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
+        return ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
     }
 
     // ---------------- Player ----------------
@@ -299,13 +407,19 @@ class PlayerActivity : AppCompatActivity() {
     // ---------------- Queue navigation ----------------
 
     private fun nextItem() {
-        if (player.hasNextMediaItem()) player.seekToNextMediaItem()
-        else toast(getString(R.string.end_of_queue))
+        if (userRepeatMode == Player.REPEAT_MODE_ONE) {
+            player.seekTo(0)
+        } else if (player.hasNextMediaItem()) {
+            player.seekToNextMediaItem()
+        } else {
+            toast(getString(R.string.end_of_queue))
+        }
         player.play()
     }
 
     private fun prevItem() {
         when {
+            userRepeatMode == Player.REPEAT_MODE_ONE -> player.seekTo(0)
             player.currentPosition > 3000 -> player.seekTo(0)
             player.hasPreviousMediaItem() -> player.seekToPreviousMediaItem()
             else -> player.seekTo(0)
