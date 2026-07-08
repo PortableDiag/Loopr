@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.3 — 2026-07-08
+- Fixed folder queueing when a video is opened from **Downloads** (or any Storage‑Access‑Framework source): the file is now located by display name, so ⏮ / ⏭ traverse the folder instead of falling back to a single‑item queue.
+
 ## 1.2 — 2026-07-08
 - Opening a video from a file manager or another app now enqueues the **whole folder** (sorted by name), so ⏮ / ⏭ move through the other videos in that folder instead of dead‑ending on a single file. Falls back to just the opened file when media permission hasn't been granted or the source can't be located.
 - **Repeat One** now restarts the current video on ⏮ / ⏭, matching how the mode already behaves at the end of a video.
