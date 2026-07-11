@@ -28,6 +28,7 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import android.widget.SeekBar
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
@@ -89,6 +90,16 @@ class PlayerActivity : AppCompatActivity() {
     private var queue: List<VideoItem> = emptyList()
     private var startIndex = 0
     private var currentVideoIndex = 0
+
+    // Non-null when this instance was launched by an external VIEW intent (single file). Kept so
+    // that, once media permission is granted, we can upgrade the single-item queue to the whole
+    // folder and let Next/Prev traverse it.
+    private var externalUri: Uri? = null
+
+    private val requestMediaPerm =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) tryUpgradeToFolderQueue()
+        }
 
     private var userRepeatMode = Player.REPEAT_MODE_ALL
     private var shuffle = false
@@ -154,16 +165,19 @@ class PlayerActivity : AppCompatActivity() {
         setupPlayer()
         updateChips()
         showControls()
+        maybeRequestPermissionForFolder()
     }
 
     /** Resolves the play queue from the static handoff, or an external VIEW intent. */
     private fun buildQueue(): Boolean {
         val idx = intent.getIntExtra(EXTRA_INDEX, -1)
         if (PlayQueue.items.isNotEmpty() && idx >= 0) {
+            externalUri = null
             queue = PlayQueue.items
             startIndex = idx.coerceIn(0, queue.size - 1)
         } else {
             val uri = intent.data ?: return false
+            externalUri = uri
             val title = intent.getStringExtra(EXTRA_TITLE)
                 ?: uri.lastPathSegment ?: "Video"
             // Gather the other videos in the same folder so Next/Prev can traverse them;
@@ -313,10 +327,46 @@ class PlayerActivity : AppCompatActivity() {
         }.getOrNull()
     }
 
-    private fun hasMediaPermission(): Boolean {
-        val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+    private fun mediaPermission(): String =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
             Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
-        return ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasMediaPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, mediaPermission()) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * On an external launch we can only enqueue the whole folder once we hold media permission
+     * (see [buildFolderQueue]). An app opened from a file manager usually hasn't been granted it,
+     * so request it here; the grant callback upgrades the single-item queue via
+     * [tryUpgradeToFolderQueue]. No-op for library launches or when permission is already held.
+     */
+    private fun maybeRequestPermissionForFolder() {
+        if (externalUri != null && queue.size <= 1 && !hasMediaPermission()) {
+            runCatching { requestMediaPerm.launch(mediaPermission()) }
+        }
+    }
+
+    /**
+     * After media permission is granted, rebuild the folder queue for the externally-opened file
+     * and swap it into the player in place, preserving the current file, position and play state,
+     * so Next/Prev can now traverse the folder.
+     */
+    private fun tryUpgradeToFolderQueue() {
+        val uri = externalUri ?: return
+        if (queue.size > 1) return
+        val folder = runCatching { buildFolderQueue(uri) }.getOrNull() ?: return
+        if (folder.first.size <= 1) return
+
+        val pos = player.currentPosition
+        val wasPlaying = player.playWhenReady
+        queue = folder.first
+        startIndex = folder.second
+        currentVideoIndex = startIndex
+        player.setMediaItems(queue.map { toMediaItem(it) }, startIndex, pos)
+        player.prepare()
+        player.playWhenReady = wasPlaying
+        binding.title.text = queue[startIndex].title
+        updateChips()
     }
 
     // ---------------- Player ----------------
@@ -416,6 +466,7 @@ class PlayerActivity : AppCompatActivity() {
         loadQueueIntoPlayer()
         updateChips(); updateMarkers()
         showControls()
+        maybeRequestPermissionForFolder()
     }
 
     private fun multiInstanceEnabled(): Boolean =

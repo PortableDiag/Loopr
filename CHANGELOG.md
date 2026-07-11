@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.4 — 2026-07-10
+- Fixed ⏭ / ⏮ dead-ending on a single file when a video is **opened from another app** (file manager, Downloads, etc.). Folder queueing needs media access, which an externally‑launched app usually hasn't been granted — so it now **requests that permission on launch** and, once granted, upgrades the queue to the whole folder in place (keeping the current file and position). Without the grant it still plays the single file as before.
+
 ## 1.3 — 2026-07-08
 - Fixed folder queueing when a video is opened from **Downloads** (or any Storage‑Access‑Framework source): the file is now located by display name, so ⏮ / ⏭ traverse the folder instead of falling back to a single‑item queue.
 
