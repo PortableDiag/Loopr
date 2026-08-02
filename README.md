@@ -14,7 +14,7 @@ A modern, dark‑first **video player for Android** built around one thing most 
 
 ### Playback & queue
 - Plays your whole library as a **queue** with **⏮ / ⏭** previous/next.
-- **Opening a video from a file manager or another app** enqueues the **whole containing folder** (sorted by name), so ⏮ / ⏭ traverse the folder instead of stopping at the single file.
+- **Opening a video from a file manager or another app** enqueues the **whole containing folder** (sorted by name), so ⏮ / ⏭ traverse the folder instead of stopping at the single file — no matter how the launching app references the file (a MediaStore item, a Storage‑Access‑Framework/documents URI, or a file path). Falls back to single‑file playback when the source can't be resolved.
 - **Repeat** mode cycles **Off → One → All**, and a **Shuffle** toggle — both remembered between sessions.
 - Optional **multiple‑players** mode — open several videos in their own instances and play them at once (off by default).
 - Variable **speed** (0.25×–2×), **mute**, **resize** (Fit / Crop / Stretch) and **rotate**.
