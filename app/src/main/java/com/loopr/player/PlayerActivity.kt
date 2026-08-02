@@ -19,8 +19,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.util.Log
 import android.util.Rational
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -57,6 +59,7 @@ object PlayQueue {
 class PlayerActivity : AppCompatActivity() {
 
     companion object {
+        private const val TAG = "LooprQueue"
         const val EXTRA_TITLE = "title"
         const val EXTRA_INDEX = "index"
         private const val PIP_ACTION = "com.loopr.player.PIP_CONTROL"
@@ -182,7 +185,8 @@ class PlayerActivity : AppCompatActivity() {
                 ?: uri.lastPathSegment ?: "Video"
             // Gather the other videos in the same folder so Next/Prev can traverse them;
             // fall back to just this file if we can't (no media permission, unknown source).
-            val folder = runCatching { buildFolderQueue(uri) }.getOrNull()
+            val folder = runCatching { buildFolderQueue(uri) }
+                .onFailure { Log.w(TAG, "buildFolderQueue failed", it) }.getOrNull()
             if (folder != null && folder.first.size > 1) {
                 queue = folder.first
                 startIndex = folder.second
@@ -190,6 +194,7 @@ class PlayerActivity : AppCompatActivity() {
                 queue = listOf(VideoItem(0, uri, title, 0, 0, 0, 0, ""))
                 startIndex = 0
             }
+            logd("external launch -> queue size=${queue.size} startIndex=$startIndex")
         }
         currentVideoIndex = startIndex
         return true
@@ -197,18 +202,62 @@ class PlayerActivity : AppCompatActivity() {
 
     /**
      * Resolves the folder holding the externally-opened [uri] and returns every video in it
-     * (sorted by name) paired with the index of the opened file, so Next/Prev traverse the
-     * folder. Returns null when we lack media permission or can't locate the file in MediaStore.
+     * (sorted by name) paired with the index of the opened file, so Next/Prev traverse the folder.
+     * Locates the folder by the opened file's MediaStore bucket, or — when the opened row can't be
+     * found (e.g. not indexed) — by enumerating siblings under its directory path. Returns null
+     * when we lack media permission or can resolve neither.
      */
     private fun buildFolderQueue(uri: Uri): Pair<List<VideoItem>, Int>? {
-        if (!hasMediaPermission()) return null
+        if (!hasMediaPermission()) { logd("no media permission -> single item"); return null }
 
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
             MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
         else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
 
-        val (openedId, bucketId) = locateInMediaStore(uri, collection) ?: return null
+        val openedPath = resolvePath(uri)
+        val located = locateInMediaStore(uri, collection)
+        logd("external uri=$uri authority=${uri.authority} path=$openedPath located=$located")
 
+        // Preferred: group by the opened file's MediaStore bucket — exactly its folder.
+        if (located != null) {
+            queryFolder(
+                collection,
+                "${MediaStore.Video.Media.BUCKET_ID} = ?", arrayOf(located.second.toString()),
+                matchId = located.first, matchPath = null, fallbackUri = null, fallbackTitle = null
+            )?.let { return it }
+        }
+
+        // Fallback: the opened row isn't in MediaStore, but we know its directory from the path —
+        // enumerate the sibling videos there and splice the opened file in so it still plays.
+        if (openedPath != null) {
+            val dir = openedPath.substringBeforeLast('/', "")
+            if (dir.isNotEmpty()) {
+                val title = intent.getStringExtra(EXTRA_TITLE) ?: openedPath.substringAfterLast('/')
+                // Escape LIKE metacharacters in the dir (paths commonly contain '_') so the prefix
+                // match can't spill into similarly-named sibling folders; the trailing /% stay wild.
+                val p = escapeLike(dir)
+                queryFolder(
+                    collection,
+                    "${MediaStore.Video.Media.DATA} LIKE ? ESCAPE '\\' AND " +
+                        "${MediaStore.Video.Media.DATA} NOT LIKE ? ESCAPE '\\'",
+                    arrayOf("$p/%", "$p/%/%"),
+                    matchId = -1L, matchPath = openedPath, fallbackUri = uri, fallbackTitle = title
+                )?.let { return it }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Runs a MediaStore video query and returns the matching folder's items (sorted by name)
+     * paired with the index of the opened file. The opened file is matched by [matchId] or, failing
+     * that, [matchPath]; if it isn't among the rows but [fallbackUri] is given, it's spliced in by
+     * name order so Next/Prev still include it. Returns null when nothing matched.
+     */
+    private fun queryFolder(
+        collection: Uri, selection: String, args: Array<String>,
+        matchId: Long, matchPath: String?, fallbackUri: Uri?, fallbackTitle: String?
+    ): Pair<List<VideoItem>, Int>? {
         val projection = arrayOf(
             MediaStore.Video.Media._ID,
             MediaStore.Video.Media.DISPLAY_NAME,
@@ -216,10 +265,9 @@ class PlayerActivity : AppCompatActivity() {
             MediaStore.Video.Media.SIZE,
             MediaStore.Video.Media.WIDTH,
             MediaStore.Video.Media.HEIGHT,
-            MediaStore.Video.Media.BUCKET_DISPLAY_NAME
+            MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
+            MediaStore.Video.Media.DATA
         )
-        val selection = "${MediaStore.Video.Media.BUCKET_ID} = ?"
-        val args = arrayOf(bucketId.toString())
         val sort = "${MediaStore.Video.Media.DISPLAY_NAME} COLLATE NOCASE ASC"
 
         val list = ArrayList<VideoItem>()
@@ -232,9 +280,13 @@ class PlayerActivity : AppCompatActivity() {
             val wCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
             val hCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
             val bucketCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+            val dataCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.DATA)
             while (c.moveToNext()) {
                 val id = c.getLong(idCol)
-                if (id == openedId) startIdx = list.size
+                val path = c.getString(dataCol)
+                if ((matchId >= 0 && id == matchId) || (matchPath != null && path == matchPath)) {
+                    startIdx = list.size
+                }
                 list.add(
                     VideoItem(
                         id = id,
@@ -249,45 +301,58 @@ class PlayerActivity : AppCompatActivity() {
                 )
             }
         }
-        if (startIdx < 0 || list.isEmpty()) return null
+        if (list.isEmpty()) return null
+        if (startIdx < 0) {
+            // Opened file isn't indexed; splice it in at its name-sorted position so it still plays.
+            val uriToAdd = fallbackUri ?: return null
+            val name = fallbackTitle ?: "Video"
+            val insertAt = list.indexOfFirst { name.compareTo(it.title, ignoreCase = true) < 0 }
+                .let { if (it < 0) list.size else it }
+            list.add(insertAt, VideoItem(0, uriToAdd, name, 0, 0, 0, 0, ""))
+            startIdx = insertAt
+        }
         return list to startIdx
     }
 
     /**
      * Finds the opened [uri]'s MediaStore row, returning its (_ID, BUCKET_ID) or null. Handles
      * MediaStore uris, Storage-Access-Framework / documents uris (e.g. opened from Downloads),
-     * and file:// uris by trying id → display name (+ size) → path in turn.
+     * file:// uris, and third-party file-manager providers, by trying id → path → display name in
+     * turn — the strong, unambiguous keys first.
      */
     private fun locateInMediaStore(uri: Uri, collection: Uri): Pair<Long, Long>? {
         val proj = arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.BUCKET_ID)
 
-        // 1) Already a MediaStore video uri — look it up by id.
-        if (uri.authority == MediaStore.AUTHORITY) {
-            val id = runCatching { ContentUris.parseId(uri) }.getOrNull()
-            if (id != null && id > 0) {
-                queryRow(collection, proj, "${MediaStore.Video.Media._ID} = ?", arrayOf(id.toString()))
-                    ?.let { return it }
-            }
+        // 1) A directly addressable MediaStore _id — a media uri, or one embedded in a documents
+        //    uri (e.g. the Files app: .../document/video%3A1234). Unambiguous.
+        mediaStoreIdFrom(uri)?.let { id ->
+            queryRow(collection, proj, "${MediaStore.Video.Media._ID} = ?", arrayOf(id.toString()))
+                ?.let { return it }
         }
 
-        // 2) Match by display name (+ size to disambiguate). Works for SAF/Downloads uris that
-        //    don't expose _data and aren't under the "media" authority.
+        // 2) An absolute path (file://, a decoded document id, or a provider exposing _data). A path
+        //    is unique, so prefer it over the name heuristic below.
+        resolvePath(uri)?.let { path ->
+            queryRow(collection, proj, "${MediaStore.Video.Media.DATA} = ?", arrayOf(path))
+                ?.let { return it }
+        }
+
+        // 3) Match by display name (+ size) — the fallback for third-party file-manager providers
+        //    that expose neither an id nor _data (only OpenableColumns). This is a heuristic:
+        //    several files can share a name/size, so accept ONLY an unambiguous single match.
+        //    Otherwise a staged/temp copy (e.g. a file manager's cache of an SMB/FTP download)
+        //    could resolve to a coincidentally-named local video and queue the wrong folder — a
+        //    miss here just means single-item playback, which is the safe outcome.
         val (name, size) = queryNameSize(uri)
         if (!name.isNullOrEmpty()) {
             if (size != null && size > 0) {
-                queryRow(
+                queryRowUnique(
                     collection, proj,
                     "${MediaStore.Video.Media.DISPLAY_NAME} = ? AND ${MediaStore.Video.Media.SIZE} = ?",
                     arrayOf(name, size.toString())
                 )?.let { return it }
             }
-            queryRow(collection, proj, "${MediaStore.Video.Media.DISPLAY_NAME} = ?", arrayOf(name))
-                ?.let { return it }
-        }
-
-        // 3) Last resort: match by absolute path (file:// or a provider that exposes _data).
-        resolvePath(uri)?.let { path ->
-            queryRow(collection, proj, "${MediaStore.Video.Media.DATA} = ?", arrayOf(path))
+            queryRowUnique(collection, proj, "${MediaStore.Video.Media.DISPLAY_NAME} = ?", arrayOf(name))
                 ?.let { return it }
         }
         return null
@@ -297,6 +362,18 @@ class PlayerActivity : AppCompatActivity() {
     private fun queryRow(uri: Uri, proj: Array<String>, sel: String, args: Array<String>): Pair<Long, Long>? {
         contentResolver.query(uri, proj, sel, args, null)?.use { c ->
             if (c.moveToFirst()) return c.getLong(0) to c.getLong(1)
+        }
+        return null
+    }
+
+    /** Like [queryRow] but returns a row only when the query matches EXACTLY one, so an ambiguous
+     *  name/size lookup resolves to null (single item) rather than to an arbitrary folder. */
+    private fun queryRowUnique(uri: Uri, proj: Array<String>, sel: String, args: Array<String>): Pair<Long, Long>? {
+        contentResolver.query(uri, proj, sel, args, null)?.use { c ->
+            if (c.moveToFirst()) {
+                val row = c.getLong(0) to c.getLong(1)
+                if (!c.moveToNext()) return row
+            }
         }
         return null
     }
@@ -318,9 +395,69 @@ class PlayerActivity : AppCompatActivity() {
         }.getOrElse { null to null }
     }
 
-    /** Best-effort absolute path for [uri]: direct for file://, else the DATA column. */
+    /**
+     * A MediaStore video _id directly addressable from [uri], if any: a media-authority uri, or a
+     * media-documents uri (`.../document/video:1234`) as sent by the system Files app. Returns null
+     * for uris that don't carry a MediaStore id (SAF path uris, file uris, third-party providers).
+     */
+    private fun mediaStoreIdFrom(uri: Uri): Long? {
+        if (uri.authority == MediaStore.AUTHORITY) {
+            runCatching { ContentUris.parseId(uri) }.getOrNull()?.let { if (it > 0) return it }
+        }
+        if (uri.authority == "com.android.providers.media.documents" && isDocumentUri(uri)) {
+            // Document id is "video:1234" / "image:.." — the numeric part is the MediaStore _id.
+            runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull()
+                ?.substringAfter(':', "")?.toLongOrNull()?.let { if (it > 0) return it }
+        }
+        return null
+    }
+
+    private fun isDocumentUri(uri: Uri): Boolean =
+        runCatching { DocumentsContract.isDocumentUri(this, uri) }.getOrDefault(false)
+
+    /** Escapes SQLite LIKE metacharacters (\ % _) so a value can be matched literally with ESCAPE '\'. */
+    private fun escapeLike(s: String): String =
+        s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    /** Maps primary-volume path aliases to the canonical form MediaStore's DATA column uses,
+     *  so path-based lookups (`DATA = ?` / `DATA LIKE ?`) match. */
+    private fun normalizeStoragePath(path: String): String {
+        val aliases = listOf(
+            "/sdcard/", "/mnt/sdcard/", "/storage/self/primary/", "/storage/emulated/legacy/"
+        )
+        for (a in aliases) if (path.startsWith(a)) return "/storage/emulated/0/" + path.removePrefix(a)
+        return path
+    }
+
+    /**
+     * Best-effort absolute filesystem path for [uri]. Handles file:// directly, decodes the real
+     * path out of Storage-Access-Framework document ids (ExternalStorageProvider volumes and the
+     * Downloads provider's `raw:` ids) — which is what most file managers send — and otherwise
+     * falls back to the provider's DATA column.
+     */
     private fun resolvePath(uri: Uri): String? {
-        if (uri.scheme == "file") return uri.path
+        if (uri.scheme == "file") return uri.path?.let { normalizeStoragePath(it) }
+
+        if (isDocumentUri(uri)) {
+            val docId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull()
+            when (uri.authority) {
+                "com.android.externalstorage.documents" -> if (docId != null) {
+                    // "primary:Movies/clip.mp4" or "1AB2-3CD4:Movies/clip.mp4" (SD card volume).
+                    // We don't stat the path — under scoped storage File.exists() is unreliable for
+                    // media the app can only reach via MediaStore; the DATA lookups validate it.
+                    val parts = docId.split(":", limit = 2)
+                    val vol = parts[0]
+                    val rel = parts.getOrNull(1).orEmpty()
+                    val base = if (vol.equals("primary", ignoreCase = true))
+                        "/storage/emulated/0" else "/storage/$vol"
+                    if (rel.isNotEmpty() || vol.isNotEmpty()) return "$base/$rel".trimEnd('/')
+                }
+                "com.android.providers.downloads.documents" ->
+                    if (docId != null && docId.startsWith("raw:"))
+                        return normalizeStoragePath(docId.removePrefix("raw:"))
+            }
+        }
+
         return runCatching {
             contentResolver.query(uri, arrayOf(MediaStore.Video.Media.DATA), null, null, null)
                 ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
@@ -918,6 +1055,10 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    /** Off by default; enable to diagnose external-launch queueing:
+     *  `adb shell setprop log.tag.LooprQueue DEBUG`. */
+    private fun logd(msg: String) { if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, msg) }
 
     // ---------------- Picture in Picture ----------------
 

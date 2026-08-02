@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5 — 2026-08-02
+- Fixed ⏭ / ⏮ dead-ending on a single video when opened from a **file manager** (Sift, Files by Google, etc.). Folder queueing only recognised plain MediaStore and `file://` launches; the Storage-Access-Framework "documents" URIs that most file managers actually send fell through to a one-item queue — which, looping under Repeat, felt like being **stuck on repeat-one** with no way out. Loopr now decodes those URIs (ExternalStorageProvider volume paths, the Downloads provider's `raw:` paths, and the media-documents `video:id` form) so ⏭ / ⏮ traverse the whole folder.
+- Added a path-based fallback: when the opened file isn't in MediaStore yet, its folder siblings are found by directory and the file is spliced in by name, so it still plays and navigates. Sibling matching escapes `LIKE` metacharacters and normalises `/sdcard`-style path aliases so it can't spill into similarly-named folders.
+- Hardened folder resolution against wrong-folder matches: the opened file is now located by its strong keys (MediaStore id, then absolute path) before falling back to a display-name match, and that name match is only trusted when it's **unambiguous** — so a file manager's temporary copy of a streamed/remote file (SMB/FTP) can't coincidentally resolve to a same-named local video and queue the wrong folder. Ambiguous or unlocatable launches play as a single file.
+
 ## 1.4 — 2026-07-10
 - Fixed ⏭ / ⏮ dead-ending on a single file when a video is **opened from another app** (file manager, Downloads, etc.). Folder queueing needs media access, which an externally‑launched app usually hasn't been granted — so it now **requests that permission on launch** and, once granted, upgrades the queue to the whole folder in place (keeping the current file and position). Without the grant it still plays the single file as before.
 
