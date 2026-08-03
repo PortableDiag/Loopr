@@ -22,6 +22,7 @@ import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.system.Os
 import android.util.Log
 import android.util.Rational
 import android.view.GestureDetector
@@ -98,6 +99,10 @@ class PlayerActivity : AppCompatActivity() {
     // that, once media permission is granted, we can upgrade the single-item queue to the whole
     // folder and let Next/Prev traverse it.
     private var externalUri: Uri? = null
+
+    // Whether we managed to resolve the opened file's folder at all. False means the queue is a
+    // lone file because the folder couldn't be read, not because it holds a single video.
+    private var folderResolved = false
 
     private val requestMediaPerm =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -185,8 +190,12 @@ class PlayerActivity : AppCompatActivity() {
                 ?: uri.lastPathSegment ?: "Video"
             // Gather the other videos in the same folder so Next/Prev can traverse them;
             // fall back to just this file if we can't (no media permission, unknown source).
-            val folder = runCatching { buildFolderQueue(uri) }
-                .onFailure { Log.w(TAG, "buildFolderQueue failed", it) }.getOrNull()
+            val folder = queueFromClipData(uri)
+                ?: runCatching { buildFolderQueue(uri) }
+                    .onFailure { Log.w(TAG, "buildFolderQueue failed", it) }.getOrNull()
+            // A resolved folder that holds one video is a different situation from a folder we
+            // couldn't read at all — only the latter is worth explaining at Next/Prev.
+            folderResolved = folder != null
             if (folder != null && folder.first.size > 1) {
                 queue = folder.first
                 startIndex = folder.second
@@ -198,6 +207,31 @@ class PlayerActivity : AppCompatActivity() {
         }
         currentVideoIndex = startIndex
         return true
+    }
+
+    /**
+     * The folder queue the launching app handed us outright. A file manager already knows which
+     * folder it's showing, so it can attach the other videos as ClipData items; the read grant on
+     * the intent covers all of them. This is the only way to page through folders MediaStore
+     * doesn't index (anything under a `.nomedia`), and it needs no media permission at all.
+     * Ignored unless it carries at least two items including the one we were asked to open.
+     */
+    private fun queueFromClipData(uri: Uri): Pair<List<VideoItem>, Int>? {
+        val clip = intent.clipData ?: return null
+        if (clip.itemCount < 2) return null
+
+        val list = ArrayList<VideoItem>(clip.itemCount)
+        var startIdx = -1
+        for (i in 0 until clip.itemCount) {
+            val u = clip.getItemAt(i).uri ?: continue
+            if (u == uri) startIdx = list.size
+            val name = clip.getItemAt(i).text?.toString()?.takeIf { it.isNotBlank() }
+                ?: u.lastPathSegment?.substringAfterLast('/') ?: "Video"
+            list.add(VideoItem(0, u, name, 0, 0, 0, 0, ""))
+        }
+        if (list.size < 2 || startIdx < 0) return null
+        logd("clipdata queue size=${list.size} startIndex=$startIdx")
+        return list to startIdx
     }
 
     /**
@@ -243,9 +277,54 @@ class PlayerActivity : AppCompatActivity() {
                     arrayOf("$p/%", "$p/%/%"),
                     matchId = -1L, matchPath = openedPath, fallbackUri = uri, fallbackTitle = title
                 )?.let { return it }
+
+                // Last resort: read the directory itself. MediaStore knows nothing about folders
+                // it doesn't index — anything under a .nomedia folder, or files copied in since the
+                // last scan — but they're still an ordinary folder of videos the user wants to
+                // page through. Only works where we can actually read the directory.
+                listFolderOnDisk(dir, openedPath, uri, title)?.let { return it }
             }
         }
         return null
+    }
+
+    /** Video file extensions we'll pick up when enumerating a folder off disk. */
+    private val videoExtensions = setOf(
+        "mp4", "m4v", "mkv", "webm", "avi", "mov", "3gp", "3g2", "ts", "m2ts", "mts",
+        "flv", "wmv", "asf", "mpg", "mpeg", "m2v", "ogv", "divx", "vob", "rm", "rmvb"
+    )
+
+    /**
+     * Enumerates [dir] straight off the filesystem, for folders MediaStore has no rows for. Keeps
+     * the opened file's original [uri] (that's the one we hold a read grant for) and represents its
+     * siblings as file uris. Returns null when the directory isn't readable — which is the norm
+     * under scoped storage unless the user has granted all-files access.
+     */
+    private fun listFolderOnDisk(
+        dir: String, openedPath: String, uri: Uri, title: String
+    ): Pair<List<VideoItem>, Int>? {
+        val files = runCatching {
+            java.io.File(dir).listFiles { f ->
+                f.isFile && f.extension.lowercase() in videoExtensions
+            }
+        }.getOrNull()
+        if (files.isNullOrEmpty()) { logd("disk listing unavailable for $dir"); return null }
+
+        val sorted = files.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+        var startIdx = -1
+        val list = sorted.mapIndexed { i, f ->
+            val isOpened = f.absolutePath == openedPath
+            if (isOpened) startIdx = i
+            VideoItem(
+                id = 0,
+                uri = if (isOpened) uri else Uri.fromFile(f),
+                title = f.name,
+                durationMs = 0, sizeBytes = f.length(), width = 0, height = 0, bucket = ""
+            )
+        }
+        if (startIdx < 0) return null
+        logd("disk listing $dir -> ${list.size} files")
+        return list to startIdx
     }
 
     /**
@@ -420,12 +499,17 @@ class PlayerActivity : AppCompatActivity() {
         s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     /** Maps primary-volume path aliases to the canonical form MediaStore's DATA column uses,
-     *  so path-based lookups (`DATA = ?` / `DATA LIKE ?`) match. */
+     *  so path-based lookups (`DATA = ?` / `DATA LIKE ?`) match. Includes the internal FUSE mount
+     *  points, which is the shape descriptor paths come back in. */
     private fun normalizeStoragePath(path: String): String {
         val aliases = listOf(
-            "/sdcard/", "/mnt/sdcard/", "/storage/self/primary/", "/storage/emulated/legacy/"
+            "/sdcard/", "/mnt/sdcard/", "/storage/self/primary/", "/storage/emulated/legacy/",
+            "/mnt/user/0/primary/", "/mnt/user/0/emulated/0/", "/mnt/runtime/default/emulated/0/",
+            "/mnt/runtime/read/emulated/0/", "/mnt/runtime/write/emulated/0/", "/mnt/androidwritable/0/emulated/0/"
         )
         for (a in aliases) if (path.startsWith(a)) return "/storage/emulated/0/" + path.removePrefix(a)
+        // Removable volumes: /mnt/media_rw/<vol>/x -> /storage/<vol>/x
+        if (path.startsWith("/mnt/media_rw/")) return "/storage/" + path.removePrefix("/mnt/media_rw/")
         return path
     }
 
@@ -433,7 +517,7 @@ class PlayerActivity : AppCompatActivity() {
      * Best-effort absolute filesystem path for [uri]. Handles file:// directly, decodes the real
      * path out of Storage-Access-Framework document ids (ExternalStorageProvider volumes and the
      * Downloads provider's `raw:` ids) — which is what most file managers send — and otherwise
-     * falls back to the provider's DATA column.
+     * falls back to the provider's DATA column, then to the opened descriptor's real path.
      */
     private fun resolvePath(uri: Uri): String? {
         if (uri.scheme == "file") return uri.path?.let { normalizeStoragePath(it) }
@@ -458,11 +542,28 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
 
-        return runCatching {
+        runCatching {
             contentResolver.query(uri, arrayOf(MediaStore.Video.Media.DATA), null, null, null)
                 ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
-        }.getOrNull()
+        }.getOrNull()?.let { return normalizeStoragePath(it) }
+
+        return pathFromDescriptor(uri)
     }
+
+    /**
+     * The real filesystem path behind [uri], read off the open descriptor. File managers hand us
+     * their own FileProvider uris (`content://<their.app>.fileprovider/...`), which answer neither
+     * a MediaStore id nor a DATA column — but the descriptor they return still points at the actual
+     * file, and /proc/self/fd/N is a symlink to it. That's what tells us which folder to enqueue.
+     */
+    private fun pathFromDescriptor(uri: Uri): String? = runCatching {
+        contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+            val link = Os.readlink("/proc/self/fd/${pfd.fd}")
+            // Pipes/sockets (a provider streaming rather than serving a file) aren't paths.
+            if (link.startsWith("/") && !link.startsWith("/proc/")) normalizeStoragePath(link)
+            else null
+        }
+    }.getOrNull()
 
     private fun mediaPermission(): String =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
@@ -470,6 +571,17 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun hasMediaPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, mediaPermission()) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * True when the user chose "Allow limited access" (Android 14+). The video permission still
+     * reports as granted, but MediaStore then only exposes the handful of items the user picked
+     * and blanks their paths — so no folder can be enumerated, not even the one being played.
+     */
+    private fun hasLimitedMediaAccess(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+            ContextCompat.checkSelfPermission(
+                this, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+            ) == PackageManager.PERMISSION_GRANTED
 
     /**
      * On an external launch we can only enqueue the whole folder once we hold media permission
@@ -492,6 +604,7 @@ class PlayerActivity : AppCompatActivity() {
         val uri = externalUri ?: return
         if (queue.size > 1) return
         val folder = runCatching { buildFolderQueue(uri) }.getOrNull() ?: return
+        folderResolved = true
         if (folder.first.size <= 1) return
 
         val pos = player.currentPosition
@@ -549,6 +662,7 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 binding.title.text = item?.mediaMetadata?.title
                     ?: queue.getOrNull(idx)?.title ?: ""
+                logd("now playing index=$idx/${queue.size} title=${binding.title.text}")
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -636,7 +750,25 @@ class PlayerActivity : AppCompatActivity() {
 
     // ---------------- Queue navigation ----------------
 
+    /**
+     * True when this is a lone externally-opened file, in which case Next/Prev have nowhere to go.
+     * Says why rather than silently restarting the same video, which reads as being stuck on
+     * repeat — the folder is there, we just couldn't enumerate it.
+     */
+    private fun explainSingleFile(): Boolean {
+        if (externalUri == null || queue.size > 1 || folderResolved) return false
+        toast(getString(
+            when {
+                !hasMediaPermission() -> R.string.folder_needs_permission
+                hasLimitedMediaAccess() -> R.string.folder_limited_access
+                else -> R.string.folder_unavailable
+            }
+        ))
+        return true
+    }
+
     private fun nextItem() {
+        if (explainSingleFile()) { player.seekTo(0); player.play(); return }
         if (userRepeatMode == Player.REPEAT_MODE_ONE) {
             player.seekTo(0)
         } else if (player.hasNextMediaItem()) {
@@ -648,6 +780,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun prevItem() {
+        if (explainSingleFile()) { player.seekTo(0); player.play(); return }
         when {
             userRepeatMode == Player.REPEAT_MODE_ONE -> player.seekTo(0)
             player.currentPosition > 3000 -> player.seekTo(0)

@@ -58,4 +58,7 @@
     <string name="shuffle_on">Shuffle on</string>
     <string name="shuffle_off">Shuffle off</string>
     <string name="end_of_queue">End of the list</string>
+    <string name="folder_needs_permission">Only this file — allow media access to play the rest of the folder</string>
+    <string name="folder_limited_access">Only this file — Loopr has limited media access. Allow all media in Settings to play the folder</string>
+    <string name="folder_unavailable">Only this file — the rest of the folder isn\'t readable from here</string>
 </resources>

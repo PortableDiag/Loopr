@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6 — 2026-08-03
+- Fixed ⏭ / ⏮ **still** dead-ending on a single video when opened from a file manager. Two causes, both of which left a one-item queue that felt like being stuck on repeat:
+  - The file manager's own `content://…fileprovider/…` URI answers neither a MediaStore id nor a file path, so Loopr never learned which folder the video was in and skipped folder queueing entirely. It now reads the real path back from the opened file descriptor, which works for any provider serving a real file.
+  - Choosing **"Allow limited access"** for the media permission (Android 14+) still reports as granted, but MediaStore then only exposes the handful of hand-picked items and blanks their paths — so no folder could be enumerated, not even the one playing.
+- A launching app can now hand over the folder directly (as intent `ClipData`), so ⏭ / ⏮ traverse folders MediaStore doesn't index **at all** — anything under a `.nomedia`, or files copied in since the last scan. This path needs no media permission whatsoever.
+- ⏭ / ⏮ on a folder that couldn't be read now say so instead of silently restarting the same video.
+
 ## 1.5 — 2026-08-02
 - Fixed ⏭ / ⏮ dead-ending on a single video when opened from a **file manager** (Sift, Files by Google, etc.). Folder queueing only recognised plain MediaStore and `file://` launches; the Storage-Access-Framework "documents" URIs that most file managers actually send fell through to a one-item queue — which, looping under Repeat, felt like being **stuck on repeat-one** with no way out. Loopr now decodes those URIs (ExternalStorageProvider volume paths, the Downloads provider's `raw:` paths, and the media-documents `video:id` form) so ⏭ / ⏮ traverse the whole folder.
 - Added a path-based fallback: when the opened file isn't in MediaStore yet, its folder siblings are found by directory and the file is spliced in by name, so it still plays and navigates. Sibling matching escapes `LIKE` metacharacters and normalises `/sdcard`-style path aliases so it can't spill into similarly-named folders.
