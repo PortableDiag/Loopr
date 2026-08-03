@@ -1,6 +1,6 @@
 # Loopr
 
-A modern, dark‑first **video player for Android** built around one thing most players do badly: **looping**. Loop a whole video or a precise **A–B segment** with no noticeable gap, pop the video out into a **floating window**, and browse everything on your device from a clean Material 3 library.
+A modern, dark‑first **video player for Android** built around one thing most players do badly: **looping**. Loop a whole video seamlessly, or a precise **A–B segment**, pop the video out into a **floating window**, and browse everything on your device from a clean Material 3 library.
 
 > Package: `com.loopr.player` · minSdk 26 (Android 8.0) · targetSdk 35
 
@@ -10,7 +10,7 @@ A modern, dark‑first **video player for Android** built around one thing most 
 
 ### Looping (the point of the app)
 - **Gapless single‑video loop** — repeats the current video seamlessly (`REPEAT_MODE_ONE`, same decoder, no re‑buffer at the seam).
-- **Gapless A–B loop** — set point **A** and point **B** and Loopr loops just that segment, smoothly, using a clipped media source rather than a stop‑and‑seek. A/B markers and the looped region are drawn right on the seek bar.
+- **A–B loop** — set point **A** and point **B** and Loopr loops just that segment, jumping back to A as soon as playback passes B. A/B markers and the looped region are drawn right on the seek bar.
 
 ### Playback & queue
 - Plays your whole library as a **queue** with **⏮ / ⏭** previous/next.
@@ -113,7 +113,7 @@ app/src/main/
 ## How looping works
 
 - **Whole video:** the Repeat chip sets ExoPlayer's `REPEAT_MODE_ONE`, which loops the item without tearing down the decoder — so the seam is effectively gapless.
-- **A–B segment:** setting A and B replaces the current queue item with a `ClippingMediaSource` (via `MediaItem.ClippingConfiguration`) bounded to `[A, B]` and loops *that*. Because the clip is the looped unit, you don't get the stutter of a manual "seek back to A" on every cycle. Clearing A–B restores the full‑length item in place, preserving your spot in the queue.
+- **A–B segment:** setting A and B starts a watcher that polls the playback position every 30 ms and seeks back to A the moment it passes B (or the video ends). The queue item itself is left alone — nothing is rebuilt or replaced — so clearing A–B is instant and your place in the queue is never disturbed. The poll pauses while you're scrubbing. A–B belongs to the video it was set on: moving to another one clears it, and B must come after A.
 
 ---
 
