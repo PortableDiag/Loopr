@@ -63,6 +63,8 @@ class PlayerActivity : AppCompatActivity() {
         private const val TAG = "LooprQueue"
         const val EXTRA_TITLE = "title"
         const val EXTRA_INDEX = "index"
+        /** Marks an external launch we've already moved into its own task, so it can't bounce again. */
+        private const val EXTRA_OWN_TASK = "own_task"
         private const val PIP_ACTION = "com.loopr.player.PIP_CONTROL"
         private const val EXTRA_CONTROL = "control"
         private const val CONTROL_PLAY = 1
@@ -147,6 +149,11 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Before anything is built: a video opened from another app has to be relaunched into its
+        // own task to get its own window (see [redispatchIntoOwnTask]). Not on a restore — the
+        // intent is then one we've already handled, not a fresh launch.
+        if (savedInstanceState == null && redispatchIntoOwnTask(intent)) { finish(); return }
+
         binding = ActivityPlayerBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
@@ -702,6 +709,9 @@ class PlayerActivity : AppCompatActivity() {
     /** Reused-player path: a new video was picked while this instance is alive (multi-instance off). */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // With multiple players on, a video arriving from another app opens in its own window
+        // instead of taking this one over — whatever is playing here keeps playing.
+        if (redispatchIntoOwnTask(intent)) return
         setIntent(intent)
         enforceInstancePolicy()
         if (!buildQueue()) return
@@ -723,6 +733,39 @@ class PlayerActivity : AppCompatActivity() {
     private fun multiInstanceEnabled(): Boolean =
         getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE)
             .getBoolean(MainActivity.KEY_MULTI_INSTANCE, false)
+
+    /**
+     * Gives an externally-opened video its own player window when multiple players is on.
+     *
+     * The flags that actually put a video in its own window (`NEW_DOCUMENT | MULTIPLE_TASK`) are
+     * set by whoever starts the activity — [MainActivity] does it for library picks, but a file
+     * manager has no idea the setting exists. Its VIEW intent therefore lands in the task that's
+     * already open and takes over the player sitting in it, collapsing a floating (PiP) window back
+     * to full screen. So we don't rely on the caller: relaunch the intent into a fresh task
+     * ourselves and let this pass-through instance finish.
+     *
+     * Returns true when [source] was handed on and the caller should stop handling it. Library
+     * launches (which carry an index) and intents we've already relaunched are left alone.
+     */
+    private fun redispatchIntoOwnTask(source: Intent): Boolean {
+        if (!multiInstanceEnabled()) return false
+        if (source.data == null || source.getIntExtra(EXTRA_INDEX, -1) >= 0) return false
+        if (source.getBooleanExtra(EXTRA_OWN_TASK, false)) return false
+
+        // Copied wholesale so the data uri, ClipData folder handoff and the read grant that rides
+        // FLAG_GRANT_READ_URI_PERMISSION all carry over to the new task.
+        val relaunch = Intent(source)
+            .setClass(this, PlayerActivity::class.java)
+            .putExtra(EXTRA_OWN_TASK, true)
+            .addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                    Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+            )
+        return runCatching { startActivity(relaunch); logd("relaunched into own task"); true }
+            .onFailure { Log.w(TAG, "own-task relaunch failed", it) }
+            .getOrDefault(false)
+    }
 
     /** When multi-instance is off, leave only this player alive (covers external launches too). */
     private fun enforceInstancePolicy() {
@@ -1254,6 +1297,9 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
+        // An instance that finished during onCreate (no video, or handed on to its own task) never
+        // built a player, and still gets this callback on the way out.
+        if (!this::player.isInitialized) return
         if (supportsPip() && player.isPlaying && !isInPipMode()) enterPip()
     }
 
@@ -1281,6 +1327,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        if (!this::player.isInitialized) return
         // With multiple players enabled, backgrounded instances keep playing so several
         // videos can run at once; otherwise pause when we leave the foreground (unless in PiP).
         if (!isInPipMode() && !multiInstanceEnabled()) player.pause()

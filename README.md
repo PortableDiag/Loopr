@@ -16,7 +16,7 @@ A modern, dark‑first **video player for Android** built around one thing most 
 - Plays your whole library as a **queue** with **⏮ / ⏭** previous/next.
 - **Opening a video from a file manager or another app** enqueues the **whole containing folder** (sorted by name), so ⏮ / ⏭ traverse the folder instead of stopping at the single file — no matter how the launching app references the file (a MediaStore item, a Storage‑Access‑Framework/documents URI, the app's own FileProvider, or a file path). A launching app can also hand the folder over directly by attaching it as intent `ClipData`, which covers folders MediaStore doesn't index at all (e.g. under a `.nomedia`) and needs no media permission. Loopr plays exactly the list it is handed, so a sending app must attach the file's **real containing folder** — never a cache or staging directory it copied the file into, whose other entries aren't siblings at all. Falls back to single‑file playback — and says why — when the folder can't be read.
 - **Repeat** mode cycles **Off → One → All**, and a **Shuffle** toggle — both remembered between sessions.
-- Optional **multiple‑players** mode — open several videos in their own instances and play them at once (off by default).
+- Optional **multiple‑players** mode — open several videos in their own instances and play them at once (off by default). Applies to videos opened from other apps too: with the mode on, a video handed over by a file manager gets its own window instead of taking over the player already running, so a video floating in PiP keeps playing.
 - Variable **speed** (0.25×–2×), **mute**, **resize** (Fit / Crop / Stretch) and **rotate**.
 
 ### Window mode
