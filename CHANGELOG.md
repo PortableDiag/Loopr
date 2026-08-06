@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.8 — 2026-08-05
+- The floating (PiP) window now has **⏮ and ⏭** alongside play/pause, so you can skip through the folder without expanding back to full screen. They behave exactly as they do full screen — ⏮ restarts the current video if you're more than 3 seconds in, and steps back a video if you press it again. On a lone video with no folder to walk they're greyed out rather than hidden, so the controls don't shift about.
+
 ## 1.7 — 2026-08-05
 - Fixed **multiple‑players mode being ignored for videos opened from another app**. With a video floating in the mini (PiP) window, opening a second one from a file manager pulled that window back to full screen and played the new video in it instead of starting a second player. The flags that give a video its own window can only be set by whoever launches the activity — the library grid set them, but a file manager has no idea the setting exists — so the incoming video landed in the player that was already open. Loopr now relaunches such a video into its own task itself, and the floating window is left alone. Turning the setting off is unchanged: one player, reused.
 - Fixed a crash that took the **whole app** down — every open player with it — when a player instance finished before playback had been set up (a video opened with no data, or one handed on to its own window). `onUserLeaveHint`/`onStop` touched the player that instance never built.

@@ -69,6 +69,8 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_CONTROL = "control"
         private const val CONTROL_PLAY = 1
         private const val CONTROL_PAUSE = 2
+        private const val CONTROL_PREV = 3
+        private const val CONTROL_NEXT = 4
 
         private const val KEY_REPEAT = "repeat_mode"
         private const val KEY_SHUFFLE = "shuffle"
@@ -1256,19 +1258,33 @@ class PlayerActivity : AppCompatActivity() {
         return r
     }
 
-    private fun buildPipParams(): PictureInPictureParams {
-        val playing = player.isPlaying
-        val iconRes = if (playing) R.drawable.ic_pause else R.drawable.ic_play
-        val control = if (playing) CONTROL_PAUSE else CONTROL_PLAY
+    /** One tappable control in the PiP window, wired to [pipReceiver] through [PIP_ACTION]. */
+    private fun pipAction(control: Int, iconRes: Int, label: String, enabled: Boolean): RemoteAction {
         val intent = Intent(PIP_ACTION).setPackage(packageName).putExtra(EXTRA_CONTROL, control)
         val pi = PendingIntent.getBroadcast(
             this, control, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val label = if (playing) getString(R.string.pause) else getString(R.string.play)
-        val action = RemoteAction(Icon.createWithResource(this, iconRes), label, label, pi)
+        return RemoteAction(Icon.createWithResource(this, iconRes), label, label, pi)
+            .apply { isEnabled = enabled }
+    }
+
+    private fun buildPipParams(): PictureInPictureParams {
+        val playing = player.isPlaying
+        // Skipping without going full screen again. Greyed out rather than hidden on a lone video,
+        // so the window's controls don't shift about depending on what's playing.
+        val canSkip = queue.size > 1
+        val actions = listOf(
+            pipAction(CONTROL_PREV, R.drawable.ic_skip_prev, getString(R.string.previous), canSkip),
+            if (playing) pipAction(CONTROL_PAUSE, R.drawable.ic_pause, getString(R.string.pause), true)
+            else pipAction(CONTROL_PLAY, R.drawable.ic_play, getString(R.string.play), true),
+            pipAction(CONTROL_NEXT, R.drawable.ic_skip_next, getString(R.string.next), canSkip)
+        )
+        // The system caps how many controls a PiP window will show (typically three).
+        val max = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) maxNumPictureInPictureActions
+        else actions.size
         return PictureInPictureParams.Builder()
             .setAspectRatio(pipAspect())
-            .setActions(listOf(action))
+            .setActions(if (actions.size <= max) actions else listOf(actions[1]))
             .build()
     }
 
@@ -1290,6 +1306,8 @@ class PlayerActivity : AppCompatActivity() {
             when (intent.getIntExtra(EXTRA_CONTROL, 0)) {
                 CONTROL_PLAY -> player.play()
                 CONTROL_PAUSE -> player.pause()
+                CONTROL_PREV -> prevItem()
+                CONTROL_NEXT -> nextItem()
             }
             updatePipParams()
         }

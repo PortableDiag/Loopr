@@ -20,7 +20,7 @@ A modern, dark‑first **video player for Android** built around one thing most 
 - Variable **speed** (0.25×–2×), **mute**, **resize** (Fit / Crop / Stretch) and **rotate**.
 
 ### Window mode
-- **Picture‑in‑Picture** — float the video over other apps, with the correct aspect ratio and a play/pause action. Auto‑enters PiP when you press Home mid‑playback.
+- **Picture‑in‑Picture** — float the video over other apps, with the correct aspect ratio and **⏮ / play‑pause / ⏭** controls, so you can skip through the folder without expanding back to full screen. Auto‑enters PiP when you press Home mid‑playback.
 
 ### Gestures & controls
 - **Tap** to show/hide controls (auto‑hide while playing).
