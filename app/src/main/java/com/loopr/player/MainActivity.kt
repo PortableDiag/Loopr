@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.provider.Settings
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
@@ -31,6 +32,9 @@ class MainActivity : AppCompatActivity() {
     companion object {
         /** When set, each picked video opens in its own player instead of reusing one. */
         const val KEY_MULTI_INSTANCE = "multi_instance"
+
+        /** When set, the window button (and Home) float the video over other apps instead of PiP. */
+        const val KEY_FLOATING = "floating_windows"
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -95,6 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPrepareOptionsMenu(menu: Menu): Boolean {
         menu.findItem(R.id.action_multi)?.isChecked = multiInstanceEnabled()
+        menu.findItem(R.id.action_floating)?.isChecked = floatingEnabled()
         return super.onPrepareOptionsMenu(menu)
     }
 
@@ -105,12 +110,48 @@ class MainActivity : AppCompatActivity() {
         R.id.action_refresh -> { if (hasPermission()) loadVideos(); true }
         R.id.action_theme -> { showThemeDialog(); true }
         R.id.action_multi -> { toggleMultiInstance(item); true }
+        R.id.action_floating -> { toggleFloating(item); true }
         else -> false
     }
 
     private fun multiInstanceEnabled(): Boolean =
         getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE)
             .getBoolean(KEY_MULTI_INSTANCE, false)
+
+    private fun floatingEnabled(): Boolean =
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE).getBoolean(KEY_FLOATING, false)
+
+    /**
+     * Floating windows need Android's "Display over other apps", which is worth explaining rather
+     * than throwing a system screen at someone. The setting itself flips either way — without the
+     * permission the player just falls back to the system mini window.
+     */
+    private fun toggleFloating(item: MenuItem) {
+        val enabled = !floatingEnabled()
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_FLOATING, enabled).apply()
+        item.isChecked = enabled
+        Toast.makeText(
+            this, if (enabled) R.string.float_on else R.string.float_off, Toast.LENGTH_SHORT
+        ).show()
+        if (enabled && !Settings.canDrawOverlays(this)) {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.float_permission_title)
+                .setMessage(R.string.float_permission_body)
+                .setPositiveButton(R.string.open_settings) { _, _ ->
+                    runCatching {
+                        startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:$packageName")
+                            )
+                        )
+                    }
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+        }
+    }
 
     private fun toggleMultiInstance(item: MenuItem) {
         val enabled = !multiInstanceEnabled()

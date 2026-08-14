@@ -61,4 +61,24 @@
     <string name="folder_needs_permission">Only this file — allow media access to play the rest of the folder</string>
     <string name="folder_limited_access">Only this file — Loopr has limited media access. Allow all media in Settings to play the folder</string>
     <string name="folder_unavailable">Only this file — the rest of the folder isn\'t readable from here</string>
+
+    <string name="floating_windows">Floating windows</string>
+    <string name="float_chip">Float</string>
+    <string name="float_on">Videos float in their own windows</string>
+    <string name="float_off">Videos use the system mini window</string>
+    <string name="float_video">Float this video</string>
+    <string name="float_expand">Full screen</string>
+    <string name="float_close">Close window</string>
+    <string name="ab_badge">A–B</string>
+    <string name="float_permission_title">Loopr needs to draw over other apps</string>
+    <string name="float_permission_body">Floating windows sit on top of whatever else you\'re doing, so Android asks you to allow it once. Without it Loopr falls back to the system mini window, which can only show one video at a time.</string>
+    <string name="float_permission_denied">Not allowed to draw over other apps — using the system mini window instead</string>
+    <string name="float_permission_lost">Permission to draw over other apps was withdrawn — using the system mini window</string>
+    <string name="float_limit">%1$d floating videos is the limit</string>
+    <string name="float_no_decoder">This device can\'t decode another video at once — window closed</string>
+    <string name="float_cant_play">Can\'t play this video in a window</string>
+    <string name="float_notification_one">1 floating video</string>
+    <string name="float_notification_many">%1$d floating videos</string>
+    <string name="float_close_all">Close all</string>
+    <string name="float_channel">Floating windows</string>
 </resources>

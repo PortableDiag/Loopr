@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9 — 2026-08-14
+- Added **floating windows**: up to **three** videos at once, each in its own draggable, pinch-resizable window over whatever else you're doing. Turn on **Floating windows** (overflow menu, or the **Float** chip in the player) and the window button — and pressing Home — hands the video to a floating window instead of the system mini window.
+  - Each window carries its own **folder queue**, so ⏮ / ⏭ walk the folder exactly as they do full screen (⏮ restarts the video if you're more than 3 seconds in, steps back on a second press, and both are greyed out on a lone video).
+  - **The A–B loop travels with the video.** Set A–B, float it, and the window keeps looping that segment — an **A–B** badge shows the loop is live, since there's no seek bar in a window that small. Tap ⛶ to go back to full screen and the queue, position, speed, mute, resize and A–B all come back with it.
+  - Drag a window anywhere; it's kept on screen, and re-clamped when you rotate the phone. Pinch to resize, aspect ratio preserved, between 160dp wide and 60% of the screen; the size you settle on is reused for the next window you open.
+  - One notification for the lot ("N floating videos") with **Close all**, and it stops itself when the last window closes.
+  - **Honest limits:** a fourth window is refused with a message rather than silently ignored, and if the device runs out of video decoders that window closes with a reason instead of leaving a black rectangle floating.
+  - Floating windows need Android's **"Display over other apps"** permission, which Loopr explains before sending you to the settings screen. Without it — or if it's withdrawn later — Loopr falls back to the **system mini window (PiP)** and says so. That zero-permission path is unchanged for anyone who doesn't turn floating windows on.
+
 ## 1.8 — 2026-08-05
 - The floating (PiP) window now has **⏮ and ⏭** alongside play/pause, so you can skip through the folder without expanding back to full screen. They behave exactly as they do full screen — ⏮ restarts the current video if you're more than 3 seconds in, and steps back a video if you press it again. On a lone video with no folder to walk they're greyed out rather than hidden, so the controls don't shift about.
 

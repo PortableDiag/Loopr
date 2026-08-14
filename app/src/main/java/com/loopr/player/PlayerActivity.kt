@@ -22,6 +22,7 @@ import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.system.Os
 import android.util.Log
 import android.util.Rational
@@ -32,6 +33,7 @@ import android.view.View
 import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
@@ -65,6 +67,8 @@ class PlayerActivity : AppCompatActivity() {
         const val EXTRA_INDEX = "index"
         /** Marks an external launch we've already moved into its own task, so it can't bounce again. */
         private const val EXTRA_OWN_TASK = "own_task"
+        /** Set on the intent a floating window sends when it expands back to full screen. */
+        const val EXTRA_FROM_FLOATING = "from_floating"
         private const val PIP_ACTION = "com.loopr.player.PIP_CONTROL"
         private const val EXTRA_CONTROL = "control"
         private const val CONTROL_PLAY = 1
@@ -72,14 +76,22 @@ class PlayerActivity : AppCompatActivity() {
         private const val CONTROL_PREV = 3
         private const val CONTROL_NEXT = 4
 
-        private const val KEY_REPEAT = "repeat_mode"
-        private const val KEY_SHUFFLE = "shuffle"
+        internal const val KEY_REPEAT = "repeat_mode"
+        internal const val KEY_SHUFFLE = "shuffle"
 
-        private val SPEEDS = floatArrayOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+        // Shared with FloatingWindow so a floated video keeps the same speeds, resize modes and
+        // A-B behaviour it had full screen — one definition, no drift between the two players.
+        internal val SPEEDS = floatArrayOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+        internal val RESIZE_MODES = intArrayOf(
+            AspectRatioFrameLayout.RESIZE_MODE_FIT,
+            AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
+            AspectRatioFrameLayout.RESIZE_MODE_FILL
+        )
+        internal val RESIZE_LABELS = arrayOf("Fit", "Crop", "Stretch")
         private const val SEEK_STEP_MS = 10_000L
         // A-B loop boundary poll; small enough that the loop-back is imperceptible.
-        private const val LOOP_POLL_MS = 30L
-        private const val UNSET = Long.MIN_VALUE
+        internal const val LOOP_POLL_MS = 30L
+        internal const val UNSET = Long.MIN_VALUE
         private const val HIDE_DELAY = 3500L
 
         private const val MIN_SCALE = 1f
@@ -124,12 +136,9 @@ class PlayerActivity : AppCompatActivity() {
     private var speedIndex = 3
     private var muted = false
     private var resizeIndex = 0
-    private val resizeModes = intArrayOf(
-        AspectRatioFrameLayout.RESIZE_MODE_FIT,
-        AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
-        AspectRatioFrameLayout.RESIZE_MODE_FILL
-    )
-    private val resizeLabels = arrayOf("Fit", "Crop", "Stretch")
+
+    /** State handed back by a floating window that expanded; consumed when the player is built. */
+    private var restore: FloatingHandoff.Payload? = null
 
     private var controlsVisible = true
     private var isSeeking = false
@@ -187,6 +196,7 @@ class PlayerActivity : AppCompatActivity() {
 
     /** Resolves the play queue from the static handoff, or an external VIEW intent. */
     private fun buildQueue(): Boolean {
+        if (restoreFromFloating()) return true
         val idx = intent.getIntExtra(EXTRA_INDEX, -1)
         if (PlayQueue.items.isNotEmpty() && idx >= 0) {
             externalUri = null
@@ -215,6 +225,31 @@ class PlayerActivity : AppCompatActivity() {
             logd("external launch -> queue size=${queue.size} startIndex=$startIndex")
         }
         currentVideoIndex = startIndex
+        return true
+    }
+
+    /**
+     * Picks up a video coming back out of a floating window. Everything travels — queue, index,
+     * position, play state, speed, mute, resize and the A-B points — so the round trip loses
+     * nothing; the position itself is applied in [loadQueueIntoPlayer], once there is a player.
+     */
+    private fun restoreFromFloating(): Boolean {
+        if (!intent.getBooleanExtra(EXTRA_FROM_FLOATING, false)) return false
+        val p = FloatingHandoff.takeToActivity() ?: return false
+        if (p.queue.isEmpty()) return false
+
+        restore = p
+        queue = p.queue
+        startIndex = p.index.coerceIn(0, p.queue.size - 1)
+        currentVideoIndex = startIndex
+        externalUri = p.externalUri
+        folderResolved = p.folderResolved
+        aMs = p.aMs
+        bMs = p.bMs
+        speedIndex = p.speedIndex.coerceIn(0, SPEEDS.size - 1)
+        muted = p.muted
+        resizeIndex = p.resizeIndex.coerceIn(0, RESIZE_MODES.size - 1)
+        logd("restored from floating window -> queue size=${queue.size} index=$startIndex")
         return true
     }
 
@@ -639,7 +674,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun setupPlayer() {
         player = ExoPlayer.Builder(this).build()
         binding.playerView.player = player
-        binding.playerView.resizeMode = resizeModes[resizeIndex]
+        binding.playerView.resizeMode = RESIZE_MODES[resizeIndex]
 
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
@@ -699,13 +734,17 @@ class PlayerActivity : AppCompatActivity() {
 
     /** Pushes the current [queue]/[startIndex] into the player and begins playback. */
     private fun loadQueueIntoPlayer() {
-        player.setMediaItems(queue.map { toMediaItem(it) }, startIndex, 0L)
+        // A video handed back by a floating window resumes where it was, still paused if it was.
+        val resume = restore
+        restore = null
+        player.setMediaItems(queue.map { toMediaItem(it) }, startIndex, resume?.positionMs ?: 0L)
         player.repeatMode = userRepeatMode
         player.shuffleModeEnabled = shuffle
         player.setPlaybackSpeed(SPEEDS[speedIndex])
         player.volume = if (muted) 0f else 1f
         player.prepare()
-        player.playWhenReady = true
+        player.playWhenReady = resume?.playing ?: true
+        updateLoopWatcher()
     }
 
     /** Reused-player path: a new video was picked while this instance is alive (multi-instance off). */
@@ -782,6 +821,100 @@ class PlayerActivity : AppCompatActivity() {
         if (!enabled) enforceInstancePolicy()
         updateChips()
         toast(getString(if (enabled) R.string.multi_on else R.string.multi_off))
+    }
+
+    // ---------------- Floating windows ----------------
+
+    private fun floatingEnabled(): Boolean =
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE)
+            .getBoolean(MainActivity.KEY_FLOATING, false)
+
+    private fun canDrawOverlay(): Boolean = Settings.canDrawOverlays(this)
+
+    /**
+     * Returned from the "Display over other apps" screen. The user went there because they were
+     * trying to float a video, so finish that off rather than making them ask twice.
+     */
+    private val overlayPermission =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (canDrawOverlay()) floatVideo()
+            else toast(getString(R.string.float_permission_denied))
+        }
+
+    private fun requestOverlayPermission() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.float_permission_title)
+            .setMessage(R.string.float_permission_body)
+            .setPositiveButton(R.string.open_settings) { _, _ ->
+                val i = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+                runCatching { overlayPermission.launch(i) }
+                    .onFailure { toast(getString(R.string.float_permission_denied)) }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun floatSnapshot() = FloatingHandoff.Payload(
+        queue = queue,
+        index = player.currentMediaItemIndex,
+        positionMs = player.currentPosition,
+        playing = player.playWhenReady,
+        speedIndex = speedIndex,
+        muted = muted,
+        resizeIndex = resizeIndex,
+        aMs = aMs,
+        bMs = bMs,
+        externalUri = externalUri,
+        folderResolved = folderResolved
+    )
+
+    /**
+     * Hands this video to a floating window and finishes: the service owns the playback from here,
+     * so the video keeps going while Loopr itself leaves the screen. Refuses — out loud — when
+     * three are already up, because the decoders behind them are a finite resource.
+     */
+    private fun floatVideo(): Boolean {
+        if (!canDrawOverlay()) { requestOverlayPermission(); return false }
+        if (FloatingPlayerService.windowCount >= FloatingPlayerService.MAX_WINDOWS) {
+            toast(getString(R.string.float_limit, FloatingPlayerService.MAX_WINDOWS))
+            return false
+        }
+        val state = floatSnapshot()
+        logd("floating handoff index=${state.index} pos=${state.positionMs} queue=${state.queue.size}")
+        FloatingHandoff.offerToFloating(state)
+        // Silence this copy before the window's own player picks the video up.
+        player.playWhenReady = false
+        val started = runCatching {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, FloatingPlayerService::class.java)
+                    .setAction(FloatingPlayerService.ACTION_ADD)
+            )
+        }.isSuccess
+        if (!started) {
+            FloatingHandoff.takeToFloating()
+            player.play()
+            return false
+        }
+        finish()
+        return true
+    }
+
+    /** The window button: a floating window while that mode is on, the system PiP window otherwise. */
+    private fun enterWindowMode() {
+        if (floatingEnabled()) floatVideo() else enterPip()
+    }
+
+    private fun toggleFloating() {
+        val enabled = !floatingEnabled()
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE).edit()
+            .putBoolean(MainActivity.KEY_FLOATING, enabled).apply()
+        updateChips()
+        toast(getString(if (enabled) R.string.float_on else R.string.float_off))
+        if (enabled && !canDrawOverlay()) requestOverlayPermission()
     }
 
     private fun currentAbsPosition(): Long = player.currentPosition
@@ -928,11 +1061,12 @@ class PlayerActivity : AppCompatActivity() {
         binding.btnPrev.setOnClickListener { prevItem(); poke() }
         binding.btnNext.setOnClickListener { nextItem(); poke() }
         binding.btnRotate.setOnClickListener { toggleOrientation(); poke() }
-        binding.btnPip.setOnClickListener { enterPip() }
+        binding.btnPip.setOnClickListener { enterWindowMode() }
 
         binding.chipLoop.setOnClickListener { cycleRepeat(); poke() }
         binding.chipShuffle.setOnClickListener { toggleShuffle(); poke() }
         binding.chipMulti.setOnClickListener { toggleMultiInstance(); poke() }
+        binding.chipFloat.setOnClickListener { toggleFloating(); poke() }
         binding.chipSetA.setOnClickListener { setPointA(); poke() }
         binding.chipSetB.setOnClickListener { setPointB(); poke() }
         binding.chipClear.setOnClickListener { clearAb(); poke() }
@@ -965,9 +1099,9 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun cycleResize() {
-        resizeIndex = (resizeIndex + 1) % resizeModes.size
-        binding.playerView.resizeMode = resizeModes[resizeIndex]
-        binding.chipResize.text = resizeLabels[resizeIndex]
+        resizeIndex = (resizeIndex + 1) % RESIZE_MODES.size
+        binding.playerView.resizeMode = RESIZE_MODES[resizeIndex]
+        binding.chipResize.text = RESIZE_LABELS[resizeIndex]
     }
 
     private fun toggleOrientation() {
@@ -992,10 +1126,22 @@ class PlayerActivity : AppCompatActivity() {
         binding.chipLoop.alpha = if (userRepeatMode == Player.REPEAT_MODE_OFF) 0.55f else 1f
         binding.chipShuffle.alpha = if (shuffle) 1f else 0.55f
         binding.chipMulti.alpha = if (multiInstanceEnabled()) 1f else 0.55f
+        binding.chipFloat.alpha = if (floatingEnabled()) 1f else 0.55f
         binding.chipSetA.alpha = if (aMs != UNSET) 1f else 0.85f
         binding.chipSetB.alpha = if (bMs != UNSET) 1f else 0.85f
         binding.chipClear.alpha = if (aMs != UNSET || bMs != UNSET) 1f else 0.4f
         binding.chipSpeed.text = formatSpeed(SPEEDS[speedIndex])
+        binding.chipResize.text = RESIZE_LABELS[resizeIndex]
+        binding.chipMute.setText(if (muted) R.string.unmute else R.string.mute)
+        binding.chipMute.setCompoundDrawablesRelativeWithIntrinsicBounds(
+            if (muted) R.drawable.ic_volume_off else R.drawable.ic_volume_up, 0, 0, 0
+        )
+        // The window button floats the video while that mode is on, and enters PiP otherwise.
+        binding.btnPip.setImageResource(
+            if (floatingEnabled()) R.drawable.ic_float else R.drawable.ic_pip
+        )
+        binding.btnPip.contentDescription =
+            getString(if (floatingEnabled()) R.string.float_video else R.string.pip)
     }
 
     // ---------------- SeekBar ----------------
@@ -1318,7 +1464,14 @@ class PlayerActivity : AppCompatActivity() {
         // An instance that finished during onCreate (no video, or handed on to its own task) never
         // built a player, and still gets this callback on the way out.
         if (!this::player.isInitialized) return
-        if (supportsPip() && player.isPlaying && !isInPipMode()) enterPip()
+        if (!player.isPlaying || isInPipMode()) return
+        // Home with floating windows on hands the video to its own window instead of the system's.
+        if (floatingEnabled()) {
+            if (canDrawOverlay()) { floatVideo(); return }
+            // The permission was granted once and has since been withdrawn: say so, then fall back.
+            toast(getString(R.string.float_permission_lost))
+        }
+        if (supportsPip()) enterPip()
     }
 
     override fun onPictureInPictureModeChanged(isInPip: Boolean, newConfig: Configuration) {

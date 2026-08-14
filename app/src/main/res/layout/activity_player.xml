@@ -239,6 +239,12 @@
                         android:text="@string/multi_chip" />
 
                     <TextView
+                        android:id="@+id/chipFloat"
+                        style="@style/Chip"
+                        android:drawableStart="@drawable/ic_float"
+                        android:text="@string/float_chip" />
+
+                    <TextView
                         android:id="@+id/chipSetA"
                         style="@style/Chip"
                         android:text="@string/set_a" />

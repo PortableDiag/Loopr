@@ -21,6 +21,7 @@ A modern, dark‑first **video player for Android** built around one thing most 
 
 ### Window mode
 - **Picture‑in‑Picture** — float the video over other apps, with the correct aspect ratio and **⏮ / play‑pause / ⏭** controls, so you can skip through the folder without expanding back to full screen. Auto‑enters PiP when you press Home mid‑playback.
+- **Floating windows** (optional) — Android allows only **one** PiP window per device, so for several videos at once Loopr draws its own: up to **three** overlay windows, each dragged and pinch‑resized where you want it. Each carries its own folder queue (⏮ / ⏭ traverse it) and **its own A–B loop**, so a segment you set before floating keeps looping in the window, marked with an **A–B** badge. Tap ⛶ and it goes back to full screen with the queue, position, speed, mute, resize and A–B intact. One notification covers the lot, with **Close all**. Needs the "Display over other apps" permission; without it Loopr falls back to the system PiP window and says so.
 
 ### Gestures & controls
 - **Tap** to show/hide controls (auto‑hide while playing).
@@ -91,6 +92,15 @@ No third‑party analytics, ads, or network calls — Loopr only reads the video
 adb install -r app/build/outputs/apk/release/app-release.apk
 ```
 
+### Instrumented tests
+The floating windows are overlays drawn by a service, so no accessibility dump or `adb shell input`
+can reach them — their drag and pinch‑resize are covered by an on‑device test that injects real
+multi‑pointer events and reads the window geometry back from `dumpsys window`:
+```bash
+adb shell appops set com.loopr.player SYSTEM_ALERT_WINDOW allow   # the test needs the permission
+./gradlew connectedDebugAndroidTest
+```
+
 ---
 
 ## Project structure
@@ -100,6 +110,9 @@ app/src/main/
 ├── java/com/loopr/player/
 │   ├── MainActivity.kt      # video library: MediaStore query, grid, permissions, theme
 │   ├── PlayerActivity.kt    # ExoPlayer, custom controls, A–B loop, queue, PiP, gestures
+│   ├── FloatingPlayerService.kt  # foreground service owning up to 3 floating windows
+│   ├── FloatingWindow.kt    # one overlay window: own player, queue, A–B, drag/pinch
+│   ├── FloatingHandoff.kt   # state passed between the activity and a floating window
 │   ├── VideoAdapter.kt      # RecyclerView grid adapter
 │   ├── VideoItem.kt         # video model
 │   ├── ThumbnailLoader.kt   # async thumbnail loading + LRU cache

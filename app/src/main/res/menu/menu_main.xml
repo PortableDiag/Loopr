@@ -16,4 +16,9 @@
         android:title="@string/multiple_players"
         android:checkable="true"
         app:showAsAction="never" />
+    <item
+        android:id="@+id/action_floating"
+        android:title="@string/floating_windows"
+        android:checkable="true"
+        app:showAsAction="never" />
 </menu>

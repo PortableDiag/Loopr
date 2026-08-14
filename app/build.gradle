@@ -17,8 +17,9 @@ android {
         applicationId "com.loopr.player"
         minSdk 26
         targetSdk 35
-        versionCode 9
-        versionName "1.8"
+        versionCode 10
+        versionName "1.9"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -69,4 +70,10 @@ dependencies {
 
     // Coroutines for async thumbnail loading
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+
+    // Instrumented tests. A floating window is an overlay drawn by a service, so the only way to
+    // exercise its pinch-resize is to inject real multi-pointer events on a device.
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test:rules:1.6.1'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
 }
