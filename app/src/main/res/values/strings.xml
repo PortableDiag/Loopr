@@ -77,6 +77,7 @@
     <string name="float_limit">%1$d floating videos is the limit</string>
     <string name="float_no_decoder">This device can\'t decode another video at once — window closed</string>
     <string name="float_cant_play">Can\'t play this video in a window</string>
+    <string name="float_stalled">This window stopped showing video — closed it rather than leave it black</string>
     <string name="float_notification_one">1 floating video</string>
     <string name="float_notification_many">%1$d floating videos</string>
     <string name="float_close_all">Close all</string>

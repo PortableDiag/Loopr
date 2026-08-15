@@ -7,6 +7,8 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -54,6 +56,14 @@ class FloatingWindow(
         const val MIN_WIDTH_DP = 160
         /** Above this it stops being a window you can see past. */
         const val MAX_WIDTH_FRACTION = 0.6f
+
+        /** How often the stall watchdog looks; cheap enough to run for the window's whole life. */
+        private const val STALL_CHECK_MS = 1000L
+        /**
+         * No frames for this long, while the player insists it is playing, means the picture is
+         * gone. Well clear of the gap a seek or an A-B loop-back leaves.
+         */
+        private const val STALL_AFTER_MS = 3000L
     }
 
     private val themed = ContextThemeWrapper(service, R.style.Theme_Loopr)
@@ -140,6 +150,8 @@ class FloatingWindow(
         player.playWhenReady = payload.playing
 
         updateLoopWatcher()
+        noteFrames()
+        handler.postDelayed(watchdogRunnable, STALL_CHECK_MS)
         scheduleHide()
         logd(
             "floating opened queue size=${queue.size} index=$currentIndex " +
@@ -184,6 +196,8 @@ class FloatingWindow(
             logd("floating now playing index=$idx/${queue.size} title=$title")
             service.onWindowTitleChanged()
         }
+
+        override fun onRenderedFirstFrame() = noteFrames()
 
         override fun onVideoSizeChanged(videoSize: VideoSize) {
             if (videoSize.width > 0 && videoSize.height > 0) {
@@ -233,6 +247,117 @@ class FloatingWindow(
 
     private fun updateAbBadge() {
         binding.abBadge.visibility = if (abActive()) View.VISIBLE else View.GONE
+    }
+
+    // ---------------- Stall watchdog ----------------
+
+    /*
+     * A window can go black while the player still believes it is playing. [onPlayerError] covers
+     * every failure ExoPlayer *reports*, but a video surface can stop producing frames without
+     * raising one — the clock keeps running and the window is left showing a black rectangle with
+     * no error path to close it. So watch for frames actually arriving rather than trusting the
+     * player's own account, and re-seat the surface, then re-prepare, before giving up.
+     */
+
+    private var lastFrameAtMs = 0L
+    private var lastRenderedFrames = -1
+    private var lastPositionMs = 0L
+    private var lastPositionAtMs = 0L
+    private var recoveryStage = 0
+
+    private val power by lazy { service.getSystemService(Context.POWER_SERVICE) as PowerManager }
+
+    /**
+     * Frames the video renderer has actually put on the surface.
+     *
+     * The obvious signal, `AnalyticsListener.onVideoFrameProcessingOffset`, is reported when a
+     * renderer is disabled or reset rather than as frames go out — healthy playback can run for
+     * seconds without one, which reads as a stall. This counter moves with every frame rendered.
+     */
+    private fun framesRendered(): Int {
+        val counters = player.videoDecoderCounters ?: return -1
+        counters.ensureUpdated()
+        return counters.renderedOutputBufferCount
+    }
+
+    private fun noteFrames() {
+        lastFrameAtMs = SystemClock.elapsedRealtime()
+        if (recoveryStage > 0) {
+            logd("floating recovered after stage=$recoveryStage")
+            recoveryStage = 0
+        }
+    }
+
+    private val watchdogRunnable = object : Runnable {
+        override fun run() {
+            checkForStall()
+            handler.postDelayed(this, STALL_CHECK_MS)
+        }
+    }
+
+    private fun checkForStall() {
+        val now = SystemClock.elapsedRealtime()
+        val playing = player.playWhenReady && player.playbackState == Player.STATE_READY
+        // Frames legitimately stop when the screen is off, and when the system hides overlays over
+        // Settings and permission dialogs. Neither is a stall — treating them as one would fight
+        // the display every time the phone is pocketed, and close the window behind a dialog.
+        val onScreen = binding.root.isAttachedToWindow &&
+            binding.root.windowVisibility == View.VISIBLE
+        if (!playing || !power.isInteractive || !onScreen) {
+            lastFrameAtMs = now
+            lastRenderedFrames = framesRendered()
+            lastPositionMs = player.currentPosition
+            lastPositionAtMs = now
+            return
+        }
+
+        val rendered = framesRendered()
+        // No video renderer yet, or nothing to render: there is no picture to lose.
+        if (rendered < 0) {
+            lastFrameAtMs = now
+            return
+        }
+        if (rendered != lastRenderedFrames) {
+            lastRenderedFrames = rendered
+            noteFrames()
+        }
+
+        val pos = player.currentPosition
+        if (pos != lastPositionMs) {
+            lastPositionMs = pos
+            lastPositionAtMs = now
+        }
+        if (lastFrameAtMs == 0L) lastFrameAtMs = now
+        if (now - lastFrameAtMs < STALL_AFTER_MS) return
+
+        // The clock separates the two shapes of this failure: still running means the video surface
+        // died under a live player, stopped means playback itself wedged. Logged either way, so the
+        // next occurrence is diagnosable from a logcat instead of from memory.
+        val clock = if (now - lastPositionAtMs < STALL_AFTER_MS) "running" else "stopped"
+        recoveryStage++
+        logd("floating stalled stage=$recoveryStage clock=$clock pos=$pos index=$currentIndex " +
+            "ab=${if (abActive()) "${aMs}-${bMs}" else "none"}")
+
+        when (recoveryStage) {
+            1 -> {
+                // Hand the surface back to the player: enough when the window lost its output.
+                binding.playerView.player = null
+                binding.playerView.player = player
+            }
+            2 -> {
+                val wasPlaying = player.playWhenReady
+                player.seekTo(pos)
+                player.prepare()
+                player.playWhenReady = wasPlaying
+            }
+            else -> {
+                service.toast(service.getString(R.string.float_stalled))
+                close()
+                return
+            }
+        }
+        // Give the recovery a full interval to take effect before escalating.
+        lastFrameAtMs = now
     }
 
     // ---------------- Queue ----------------

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10 — 2026-08-15
+- A floating window that **goes black while the video carries on playing** now notices and fixes itself. Loopr already closed a window with a message whenever the player *reported* a failure, but a video surface can stop putting frames on screen without reporting anything at all — leaving a black rectangle floating with nothing to recover it. Each window now watches the frames actually being drawn rather than taking the player's word for it: if they stop for three seconds it hands the surface back, then re-loads the video at the same spot, and only if neither works does it close the window and say why.
+  - Deliberately quiet about it — a window that recovers just carries on playing, since the whole point is not to interrupt you.
+  - It leaves frames alone when they stop for a good reason: screen off, or the system hiding overlays over Settings and permission dialogs. Verified it stays out of the way through a **long A–B loop**, which seeks back every few seconds and is the case most likely to be mistaken for a stall.
+  - When it does fire, it records whether the playback clock was still running, which is the detail that says whether the picture died or playback itself wedged. Turn the diagnostics on with `adb shell setprop log.tag.LooprQueue DEBUG`.
+
 ## 1.9 — 2026-08-14
 - Added **floating windows**: up to **three** videos at once, each in its own draggable, pinch-resizable window over whatever else you're doing. Turn on **Floating windows** (overflow menu, or the **Float** chip in the player) and the window button — and pressing Home — hands the video to a floating window instead of the system mini window.
   - Each window carries its own **folder queue**, so ⏮ / ⏭ walk the folder exactly as they do full screen (⏮ restarts the video if you're more than 3 seconds in, steps back on a second press, and both are greyed out on a lone video).

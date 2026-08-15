@@ -45,7 +45,9 @@ class FloatingWindowTest {
     private fun screenWidth() = context.resources.displayMetrics.widthPixels
 
     @Before
-    fun openWindow() {
+    fun openWindow() = openWindow(PlayerActivity.UNSET, PlayerActivity.UNSET)
+
+    private fun openWindow(aMs: Long, bMs: Long) {
         val video = firstVideo()
         assumeTrue("no video in MediaStore to float", video != null)
         closeAll()
@@ -59,8 +61,8 @@ class FloatingWindowTest {
                 speedIndex = 3,
                 muted = true,
                 resizeIndex = 0,
-                aMs = PlayerActivity.UNSET,
-                bMs = PlayerActivity.UNSET,
+                aMs = aMs,
+                bMs = bMs,
                 externalUri = null,
                 folderResolved = true
             )
@@ -134,6 +136,40 @@ class FloatingWindowTest {
         assertTrue("right edge ${after.right} is off screen", after.right <= metrics.widthPixels)
         assertTrue("bottom edge ${after.bottom} is off screen", after.bottom <= metrics.heightPixels)
         assertEquals("window should keep its size", before.width(), after.width())
+    }
+
+    /**
+     * The watchdog closes a window that has stopped showing frames, so a wrong heartbeat would
+     * close a perfectly healthy one instead. Play well past the point where it would have
+     * escalated through both recovery stages and given up.
+     */
+    @Test
+    fun aHealthyWindowIsNotClosedByTheStallWatchdog() {
+        shell("setprop log.tag.LooprQueue DEBUG")
+        shell("logcat -c")
+        SystemClock.sleep(12_000)
+
+        assertEquals("a healthy window should still be open", 1, windowFrames().size)
+        val log = shell("logcat -d -s LooprQueue")
+        assertTrue("watchdog fired on a healthy window:\n$log", !log.contains("floating stalled"))
+    }
+
+    /**
+     * The state the operator was in when a window went black: an A-B segment looping, which seeks
+     * back to A every time it passes B. Frames genuinely stop for a moment at each loop-back, so a
+     * watchdog with too tight a threshold would close the window mid-loop.
+     */
+    @Test
+    fun anAbLoopDoesNotTripTheStallWatchdog() {
+        closeAll()
+        openWindow(aMs = 2_000L, bMs = 5_000L)
+        shell("setprop log.tag.LooprQueue DEBUG")
+        shell("logcat -c")
+        SystemClock.sleep(15_000)   // several loop-backs at a 3s segment
+
+        assertEquals("a looping window should still be open", 1, windowFrames().size)
+        val log = shell("logcat -d -s LooprQueue")
+        assertTrue("watchdog fired on a healthy A-B loop:\n$log", !log.contains("floating stalled"))
     }
 
     // ---------------- helpers ----------------
