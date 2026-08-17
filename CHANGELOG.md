@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11 — 2026-08-16
+- A floating window that goes black is now noticed **even when the video is still being decoded perfectly**. 1.10 watched the frames the player handed to the window, which is the wrong question: those frames can keep flowing into a window that has stopped putting anything on screen, so the black window 1.10 was built to catch was exactly the one it couldn't see. Each window now also watches frames actually reaching the screen, and the two signals together cover both halves of the failure.
+- Added a recovery step for that case. Handing the surface back doesn't help a window whose drawing is itself dead, so before giving up Loopr now takes the window down and puts it straight back up — rebuilt from scratch, with the video carrying on from where it was.
+- The diagnostic now says **which** signal tripped (`signal=composite` for a dead picture under a healthy player, `signal=frames` for playback itself stopping), which is the detail that names the underlying bug. Turn it on with `adb shell setprop log.tag.LooprQueue DEBUG`.
+- **Still a safety net, not a root-cause fix.** The failure has never been reproduced away from the reporting device — this release closes the blind spot that stopped 1.10 from seeing it, and makes the next occurrence say what it was.
+
 ## 1.10 — 2026-08-15
 - A floating window that **goes black while the video carries on playing** now notices and fixes itself. Loopr already closed a window with a message whenever the player *reported* a failure, but a video surface can stop putting frames on screen without reporting anything at all — leaving a black rectangle floating with nothing to recover it. Each window now watches the frames actually being drawn rather than taking the player's word for it: if they stop for three seconds it hands the surface back, then re-loads the video at the same spot, and only if neither works does it close the window and say why.
   - Deliberately quiet about it — a window that recovers just carries on playing, since the whole point is not to interrupt you.

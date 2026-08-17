@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Insets
 import android.graphics.PixelFormat
+import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -13,6 +14,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
+import android.view.TextureView
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowInsets
@@ -64,6 +66,12 @@ class FloatingWindow(
          * gone. Well clear of the gap a seek or an A-B loop-back leaves.
          */
         private const val STALL_AFTER_MS = 3000L
+        /**
+         * Decoded frames still arriving but none of them reaching the screen for this long means
+         * the view has stopped compositing. Longer than [STALL_AFTER_MS] because this is the
+         * quieter signal of the two and a false trip costs a visible surface rebuild.
+         */
+        private const val COMPOSITE_STALL_AFTER_MS = 5000L
     }
 
     private val themed = ContextThemeWrapper(service, R.style.Theme_Loopr)
@@ -130,6 +138,7 @@ class FloatingWindow(
         binding.playerView.player = player
         binding.playerView.resizeMode =
             PlayerActivity.RESIZE_MODES[payload.resizeIndex.coerceIn(0, PlayerActivity.RESIZE_MODES.size - 1)]
+        watchComposition()
 
         setupTouch()
         setupButtons()
@@ -265,7 +274,57 @@ class FloatingWindow(
     private var lastPositionAtMs = 0L
     private var recoveryStage = 0
 
+    /** Which signal tripped the current recovery, so only that one clears it again. */
+    private var recoverySignal: String? = null
+
+    /** When the decoder last produced a frame, and when one last made it onto the screen. */
+    private var framesAdvancedAtMs = 0L
+    private var lastCompositedAtMs = 0L
+
+    /** The video TextureView and the listener ExoPlayer put on it, so [close] can restore it. */
+    private var videoTexture: TextureView? = null
+    private var innerTextureListener: TextureView.SurfaceTextureListener? = null
+
     private val power by lazy { service.getSystemService(Context.POWER_SERVICE) as PowerManager }
+
+    /**
+     * A frame reaching the *screen*, which is a different question from a frame reaching the
+     * surface — and the one [framesRendered] cannot answer.
+     *
+     * `onSurfaceTextureUpdated` is dispatched from the TextureView's own draw pass, when it calls
+     * `updateTexImage()`. So it fires only when the view actually composites, and stops the moment
+     * the view goes dark — even while the decoder carries on filling the surface behind it. That is
+     * the exact shape of a window that goes black with a live player and no error, which is why the
+     * decoder counter alone was never going to see it.
+     *
+     * ExoPlayer owns this listener for its own surface handling, so wrap rather than replace it:
+     * every callback is forwarded untouched and only the update is also counted here. [close]
+     * puts the original back, because ExoPlayer unsets it on release only if it is still there.
+     */
+    private fun watchComposition() {
+        val texture = binding.playerView.videoSurfaceView as? TextureView ?: return
+        val inner = texture.surfaceTextureListener
+        videoTexture = texture
+        innerTextureListener = inner
+        lastCompositedAtMs = SystemClock.elapsedRealtime()
+        texture.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(s: SurfaceTexture, w: Int, h: Int) {
+                lastCompositedAtMs = SystemClock.elapsedRealtime()
+                inner?.onSurfaceTextureAvailable(s, w, h)
+            }
+
+            override fun onSurfaceTextureSizeChanged(s: SurfaceTexture, w: Int, h: Int) =
+                inner?.onSurfaceTextureSizeChanged(s, w, h) ?: Unit
+
+            override fun onSurfaceTextureDestroyed(s: SurfaceTexture): Boolean =
+                inner?.onSurfaceTextureDestroyed(s) ?: true
+
+            override fun onSurfaceTextureUpdated(s: SurfaceTexture) {
+                lastCompositedAtMs = SystemClock.elapsedRealtime()
+                inner?.onSurfaceTextureUpdated(s)
+            }
+        }
+    }
 
     /**
      * Frames the video renderer has actually put on the surface.
@@ -282,10 +341,20 @@ class FloatingWindow(
 
     private fun noteFrames() {
         lastFrameAtMs = SystemClock.elapsedRealtime()
-        if (recoveryStage > 0) {
-            logd("floating recovered after stage=$recoveryStage")
-            recoveryStage = 0
-        }
+    }
+
+    /**
+     * Clears the recovery ladder once the signal that tripped it is healthy again.
+     *
+     * It has to be *that* signal and not just any sign of life: during a composite stall the
+     * decoder keeps producing frames the whole time, so treating a decoded frame as recovery would
+     * reset the ladder on every tick and the escalation would never get past its first stage.
+     */
+    private fun noteRecovered(healthy: Boolean) {
+        if (recoveryStage == 0 || !healthy) return
+        logd("floating recovered after stage=$recoveryStage signal=$recoverySignal")
+        recoveryStage = 0
+        recoverySignal = null
     }
 
     private val watchdogRunnable = object : Runnable {
@@ -308,6 +377,8 @@ class FloatingWindow(
             lastRenderedFrames = framesRendered()
             lastPositionMs = player.currentPosition
             lastPositionAtMs = now
+            framesAdvancedAtMs = now
+            lastCompositedAtMs = now
             return
         }
 
@@ -315,10 +386,12 @@ class FloatingWindow(
         // No video renderer yet, or nothing to render: there is no picture to lose.
         if (rendered < 0) {
             lastFrameAtMs = now
+            lastCompositedAtMs = now
             return
         }
         if (rendered != lastRenderedFrames) {
             lastRenderedFrames = rendered
+            framesAdvancedAtMs = now
             noteFrames()
         }
 
@@ -328,23 +401,48 @@ class FloatingWindow(
             lastPositionAtMs = now
         }
         if (lastFrameAtMs == 0L) lastFrameAtMs = now
-        if (now - lastFrameAtMs < STALL_AFTER_MS) return
+        if (lastCompositedAtMs == 0L) lastCompositedAtMs = now
+
+        // Decoded frames still arriving, none of them reaching the screen: the picture is gone
+        // while the player is perfectly healthy — the failure the decoder counter is blind to.
+        // Gated on the decoder having produced something recently, so a genuinely static shot or a
+        // very low frame rate can never look like a dead view: no new frames, nothing to composite.
+        val decoderAlive = now - framesAdvancedAtMs < STALL_CHECK_MS * 2
+        val compositeStalled = decoderAlive && now - lastCompositedAtMs >= COMPOSITE_STALL_AFTER_MS
+        val framesStalled = now - lastFrameAtMs >= STALL_AFTER_MS
+
+        noteRecovered(
+            when (recoverySignal) {
+                "composite" -> !compositeStalled
+                "frames" -> !framesStalled
+                else -> true
+            }
+        )
+
+        if (!compositeStalled && !framesStalled) return
+        // A dead picture under a live decoder is the more specific diagnosis, so it names the log.
+        val signal = if (compositeStalled) "composite" else "frames"
+        recoverySignal = signal
 
         // The clock separates the two shapes of this failure: still running means the video surface
         // died under a live player, stopped means playback itself wedged. Logged either way, so the
         // next occurrence is diagnosable from a logcat instead of from memory.
         val clock = if (now - lastPositionAtMs < STALL_AFTER_MS) "running" else "stopped"
         recoveryStage++
-        logd("floating stalled stage=$recoveryStage clock=$clock pos=$pos index=$currentIndex " +
-            "ab=${if (abActive()) "${aMs}-${bMs}" else "none"}")
+        logd("floating stalled signal=$signal stage=$recoveryStage clock=$clock pos=$pos " +
+            "index=$currentIndex ab=${if (abActive()) "${aMs}-${bMs}" else "none"}")
 
         when (recoveryStage) {
-            1 -> {
-                // Hand the surface back to the player: enough when the window lost its output.
-                binding.playerView.player = null
-                binding.playerView.player = player
-            }
+            1 -> reseatSurface()   // enough when the window merely lost its output
             2 -> {
+                // Re-seating the surface can't help a view whose rendering is itself dead, so take
+                // the window down and put it back up: that builds a new ViewRootImpl and a new
+                // TextureView, which is the only thing in our reach that rebuilds the whole path
+                // from decoder to screen. Deliberately before re-preparing — playback is fine in
+                // the composite case, and re-preparing it would cost a visible hitch for nothing.
+                rebuildWindow()
+            }
+            3 -> {
                 val wasPlaying = player.playWhenReady
                 player.seekTo(pos)
                 player.prepare()
@@ -358,6 +456,36 @@ class FloatingWindow(
         }
         // Give the recovery a full interval to take effect before escalating.
         lastFrameAtMs = now
+        lastCompositedAtMs = now
+    }
+
+    /**
+     * Detaches the window from the [WindowManager] and adds it straight back, then re-attaches the
+     * player. Everything the view side owns — window, view root, surface — is built fresh; the
+     * player, its queue and its position are untouched, so playback carries on where it was.
+     */
+    private fun rebuildWindow() {
+        if (closed) return
+        val restored = runCatching {
+            wm.removeView(binding.root)
+            wm.addView(binding.root, lp)
+            reseatSurface()
+        }.isSuccess
+        logd("floating window rebuilt ok=$restored")
+    }
+
+    /**
+     * Hands the video surface back to the player, then re-installs the composition heartbeat.
+     *
+     * Re-attaching the player makes ExoPlayer put *its own* listener back on the TextureView, which
+     * drops the wrapper [watchComposition] installed. Without re-wrapping here, the first recovery
+     * stage would leave the heartbeat permanently silent and every later tick would read as a
+     * composite stall — escalating a healthy window all the way to closed.
+     */
+    private fun reseatSurface() {
+        binding.playerView.player = null
+        binding.playerView.player = player
+        watchComposition()
     }
 
     // ---------------- Queue ----------------
@@ -583,6 +711,9 @@ class FloatingWindow(
         closed = true
         handler.removeCallbacksAndMessages(null)
         player.removeListener(playerListener)
+        // Put ExoPlayer's own listener back before releasing: it unsets the listener itself on the
+        // way out, but only if it still finds the one it installed there.
+        videoTexture?.surfaceTextureListener = innerTextureListener
         player.release()
         runCatching { wm.removeView(binding.root) }
         logd("floating closed")
