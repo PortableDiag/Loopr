@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12 — 2026-08-18
+- **Fixed the floating window that stops playing and turns black.** Root cause found, and it was never the graphics: when a video hits a playback error ExoPlayer parks itself in an idle state, and an idle player does not restart on its own. Loopr moved the queue on to the next video but never told the player to load it — so the window sat there with no picture, no sound, and a play button that did nothing, which is exactly what you had to close and reopen the window to escape. Every recovery path now reloads the video properly.
+  - A video that fails is **retried where it stopped** first, because a momentary fault shouldn't cost you the video you were watching. Only if it fails a second time does Loopr move past it, and it says so and closes the window only once nothing in the queue will play.
+  - A decoder taken back by the system — which is what happens when something in the foreground wants one — is now retried rather than treated as the device being out of decoders.
+- **The stall watchdog can now see playback stopping.** Both of its existing signals only ran while the player claimed to be playing, so the state this failure actually left behind switched the whole watchdog off: no recovery, no message, and not one line in the log across two releases built to catch it. It now also watches for a player that has been told to play and isn't, and works back through reloading the video, reloading it where it was, and moving past it. The diagnostic names which of the three signals tripped — `signal=playback`, `signal=composite`, `signal=frames`.
+- The same defect is fixed **full screen**: a video that failed mid-queue left a black screen with dead controls there too.
+- The play button now recovers a stopped window instead of doing nothing.
+- Covered by a test that reproduces the reported symptom — a window whose video genuinely fails must go on showing moving video — which fails against 1.11 and passes here.
+
 ## 1.11 — 2026-08-16
 - A floating window that goes black is now noticed **even when the video is still being decoded perfectly**. 1.10 watched the frames the player handed to the window, which is the wrong question: those frames can keep flowing into a window that has stopped putting anything on screen, so the black window 1.10 was built to catch was exactly the one it couldn't see. Each window now also watches frames actually reaching the screen, and the two signals together cover both halves of the failure.
 - Added a recovery step for that case. Handing the surface back doesn't help a window whose drawing is itself dead, so before giving up Loopr now takes the window down and puts it straight back up — rebuilt from scratch, with the video carrying on from where it was.

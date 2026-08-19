@@ -50,11 +50,15 @@ class FloatingWindowTest {
     private fun openWindow(aMs: Long, bMs: Long) {
         val video = firstVideo()
         assumeTrue("no video in MediaStore to float", video != null)
+        openWindow(listOf(video!!), aMs, bMs)
+    }
+
+    private fun openWindow(items: List<VideoItem>, aMs: Long, bMs: Long) {
         closeAll()
 
         FloatingHandoff.offerToFloating(
             FloatingHandoff.Payload(
-                queue = listOf(video!!),
+                queue = items,
                 index = 0,
                 positionMs = 0L,
                 playing = true,
@@ -143,6 +147,64 @@ class FloatingWindowTest {
      * close a perfectly healthy one instead. Play well past the point where it would have
      * escalated through both recovery stages and given up.
      */
+    /**
+     * The reported failure, reproduced: a video that dies mid-play used to leave the window as a
+     * black rectangle with no sound and a play button that did nothing.
+     *
+     * An error puts ExoPlayer in `STATE_IDLE`, and the old error handler moved the queue on with
+     * `seekToNextMediaItem()` and no `prepare()` — which an idle player ignores. Nothing noticed,
+     * because both frame signals in the stall watchdog only run while the player says it is
+     * playing. The assertion is what the user actually sees: a window with a picture in it.
+     *
+     * Deliberately not a simulation. The first item is a genuinely unopenable content uri, so a
+     * real [androidx.media3.common.PlaybackException] travels the real recovery path.
+     */
+    @Test
+    fun aWindowWhoseVideoFailsKeepsPlayingInsteadOfGoingBlack() {
+        val good = firstVideo()
+        assumeTrue("no video in MediaStore to float", good != null)
+        val broken = good!!.copy(
+            id = MISSING_MEDIA_ID,
+            uri = ContentUris.withAppendedId(
+                MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL), MISSING_MEDIA_ID
+            ),
+            title = "missing.mp4"
+        )
+        openWindow(listOf(broken, good), PlayerActivity.UNSET, PlayerActivity.UNSET)
+
+        // Retry in place, then move past the bad file, then buffer the good one: a few seconds.
+        val frame = windowFrames().single()
+        waitFor("the window to show moving video again", timeoutMs = 30_000) { pictureMoves(frame) }
+        assertEquals("the window should still be open", 1, windowFrames().size)
+    }
+
+    /**
+     * Whether the window's pixels change over time — the one question that separates a recovered
+     * window from a stranded one.
+     *
+     * Not "is it black": the transport controls sit in the centre of the window and stay up for
+     * good on a window that never plays, so a still black window with buttons on it is not a
+     * uniform rectangle and would pass a blankness check. Motion cannot be faked by chrome.
+     */
+    private fun pictureMoves(frame: Rect): Boolean {
+        val before = capture(frame) ?: return false
+        SystemClock.sleep(700)
+        val after = capture(frame) ?: return false
+        return !before.contentEquals(after)
+    }
+
+    private fun capture(frame: Rect): IntArray? {
+        val shot = automation.takeScreenshot() ?: return null
+        return try {
+            if (frame.right > shot.width || frame.bottom > shot.height) return null
+            IntArray(frame.width() * frame.height()).also {
+                shot.getPixels(it, 0, frame.width(), frame.left, frame.top, frame.width(), frame.height())
+            }
+        } finally {
+            shot.recycle()
+        }
+    }
+
     @Test
     fun aHealthyWindowIsNotClosedByTheStallWatchdog() {
         shell("setprop log.tag.LooprQueue DEBUG")
@@ -175,6 +237,7 @@ class FloatingWindowTest {
     // ---------------- helpers ----------------
 
     private fun firstVideo(): VideoItem? {
+
         val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
         val projection = arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME)
         context.contentResolver.query(collection, projection, null, null, null)?.use { c ->
@@ -309,6 +372,8 @@ class FloatingWindowTest {
     }
 
     private companion object {
+        /** No MediaStore row has this id, so opening it raises a genuine playback error. */
+        const val MISSING_MEDIA_ID = 987_654_321L
         val FRAME = Regex("""frame=\[(-?\d+),(-?\d+)]\[(-?\d+),(-?\d+)]""")
     }
 }

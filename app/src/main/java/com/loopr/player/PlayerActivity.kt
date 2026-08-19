@@ -96,6 +96,8 @@ class PlayerActivity : AppCompatActivity() {
 
         private const val MIN_SCALE = 1f
         private const val MAX_SCALE = 5f
+        /** Failures in a row before the queue is left alone rather than churned through. */
+        private const val MAX_CONSECUTIVE_FAILURES = 3
 
         /** Live player instances, so we can collapse to one when multi-instance is off. */
         private val liveInstances = mutableListOf<PlayerActivity>()
@@ -155,6 +157,9 @@ class PlayerActivity : AppCompatActivity() {
     private var videoScale = 1f
     private var videoTransX = 0f
     private var videoTransY = 0f
+    /** Errors since playback last worked, so an unplayable folder can't be walked forever. */
+    private var playbackFailures = 0
+
     private var lastFocusX = 0f
     private var lastFocusY = 0f
 
@@ -680,6 +685,9 @@ class PlayerActivity : AppCompatActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 binding.buffering.visibility =
                     if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
+                // Playing again is what clears the failure tally, so one bad file in a folder
+                // doesn't count towards the next one.
+                if (state == Player.STATE_READY) playbackFailures = 0
                 if (state == Player.STATE_READY) {
                     val d = player.duration
                     if (d > 0) {
@@ -723,8 +731,14 @@ class PlayerActivity : AppCompatActivity() {
 
             override fun onPlayerError(error: PlaybackException) {
                 Toast.makeText(this@PlayerActivity, "Can't play: ${error.errorCodeName}", Toast.LENGTH_LONG).show()
-                // Skip a bad file when running through a queue.
+                playbackFailures++
+                // An error leaves ExoPlayer in STATE_IDLE, and an idle player never restarts on
+                // its own: seeking doesn't lift it and neither does the play button. Skipping a
+                // bad file without preparing again left a black screen with dead controls.
+                if (playbackFailures > MAX_CONSECUTIVE_FAILURES) return
                 if (player.hasNextMediaItem()) player.seekToNextMediaItem()
+                player.prepare()
+                player.play()
             }
         })
 
@@ -1076,8 +1090,13 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun togglePlay() {
-        if (player.playbackState == Player.STATE_ENDED) { player.seekTo(0L); player.play() }
-        else player.playWhenReady = !player.playWhenReady
+        when (player.playbackState) {
+            // An idle player ignores playWhenReady; it has to be prepared again first, or the
+            // button does nothing at all.
+            Player.STATE_IDLE -> { player.prepare(); player.play() }
+            Player.STATE_ENDED -> { player.seekTo(0L); player.play() }
+            else -> player.playWhenReady = !player.playWhenReady
+        }
     }
 
     private fun cycleSpeed() {

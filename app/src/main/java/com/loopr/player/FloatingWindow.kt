@@ -72,6 +72,27 @@ class FloatingWindow(
          * quieter signal of the two and a false trip costs a visible surface rebuild.
          */
         private const val COMPOSITE_STALL_AFTER_MS = 5000L
+        /**
+         * A player that wants to play but is sitting in `STATE_IDLE` has stopped for good: an
+         * error puts it there and nothing lifts it out but [ExoPlayer.prepare]. There is nothing
+         * to wait for, so this only needs to be long enough to clear [recoverFromError]'s own
+         * retry.
+         */
+        private const val IDLE_STALL_AFTER_MS = 3000L
+        /** Buffering this long on a local file is not buffering, it is a wedge. */
+        private const val BUFFER_STALL_AFTER_MS = 12000L
+        /** Breathing space before retrying a failed item — a reclaimed decoder needs a moment. */
+        private const val ERROR_RETRY_DELAY_MS = 500L
+        /** How many videos may be skipped past before the queue is declared unplayable. */
+        private const val MAX_SKIPS_AFTER_ERROR = 3
+        /**
+         * Playing for this long is what counts as having recovered from an error.
+         *
+         * Not a rendered frame: a file that is broken at one point plays a frame, dies, is retried
+         * at the same point and plays that frame again — so a frame resets the tally on every lap
+         * and the escalation that should move the queue past it never happens.
+         */
+        private const val FAILURE_FORGET_MS = 8000L
     }
 
     private val themed = ContextThemeWrapper(service, R.style.Theme_Loopr)
@@ -216,18 +237,81 @@ class FloatingWindow(
             }
         }
 
-        override fun onPlayerError(error: PlaybackException) {
-            // A device can only decode so many videos at once; when it runs out, say so and close
-            // rather than leaving a black rectangle floating over everything.
-            val outOfDecoders = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
-                error.errorCode == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
-                error.errorCode == PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED
-            when {
-                outOfDecoders -> { service.toast(service.getString(R.string.float_no_decoder)); close() }
-                player.hasNextMediaItem() -> player.seekToNextMediaItem()
-                else -> { service.toast(service.getString(R.string.float_cant_play)); close() }
-            }
+        override fun onPlayerError(error: PlaybackException) = recoverFromError(error)
+    }
+
+    // ---------------- Error recovery ----------------
+
+    /** Consecutive failures of one video, so a retry can't spin on a file that will never play. */
+    private var failuresOnItem = 0
+    private var failingIndex = -1
+    /** Videos skipped past since playback last worked, so a dead queue can't be walked forever. */
+    private var itemsSkipped = 0
+    /** When the last failure happened, so [FAILURE_FORGET_MS] of playback can clear the tally. */
+    private var lastErrorAtMs = 0L
+
+    /**
+     * Puts a failed player back to work.
+     *
+     * An error leaves ExoPlayer in [Player.STATE_IDLE], and **an idle player never restarts on its
+     * own**: `seekTo` does not lift it, and neither does `playWhenReady`. So every branch here has
+     * to either call [ExoPlayer.prepare] or close the window. Anything else strands the window as
+     * a black rectangle with no sound and a play button that does nothing — which is exactly what
+     * the old `seekToNextMediaItem()`-without-prepare did, and what the stall watchdog could not
+     * see, because it only looks while the player claims to be playing.
+     */
+    private fun recoverFromError(error: PlaybackException) {
+        if (closed) return
+        val index = player.currentMediaItemIndex
+        if (index != failingIndex) { failingIndex = index; failuresOnItem = 0 }
+        failuresOnItem++
+        lastErrorAtMs = SystemClock.elapsedRealtime()
+        val resumeAt = player.currentPosition
+
+        // Hardware decoders are a shared resource, and the system takes one back from a background
+        // window the moment something in the foreground wants it. The platform calls that
+        // recoverable and means it — so retry before believing the device is out of decoders.
+        val decoderProblem = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+            error.errorCode == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
+            error.errorCode == PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED
+
+        logd("floating error code=${error.errorCodeName} index=$index attempt=$failuresOnItem " +
+            "skipped=$itemsSkipped decoder=$decoderProblem pos=$resumeAt")
+
+        when {
+            // First failure of this video: put it back exactly where it was. A momentary fault
+            // costs the viewer nothing this way, and skipping the video they were watching would
+            // be the wrong cure for it.
+            failuresOnItem <= 1 -> retryAfterError { restartAt(index, resumeAt) }
+            // A decoder that will not come back is not the file's fault, so moving through the
+            // queue cannot help. Say what happened and close instead of churning.
+            decoderProblem -> giveUp(R.string.float_no_decoder)
+            // Twice on the same video: it is the file. Move past it — with the prepare whose
+            // absence used to leave the window stranded.
+            itemsSkipped < MAX_SKIPS_AFTER_ERROR && player.hasNextMediaItem() ->
+                retryAfterError { itemsSkipped++; player.seekToNextMediaItem(); restartHere() }
+            else -> giveUp(R.string.float_cant_play)
         }
+    }
+
+    /** Retries off the error callback and after a pause, so a hard failure can't recurse tightly. */
+    private fun retryAfterError(action: () -> Unit) =
+        handler.postDelayed({ if (!closed) action() }, ERROR_RETRY_DELAY_MS)
+
+    private fun restartAt(index: Int, positionMs: Long) {
+        player.seekTo(index, positionMs)
+        restartHere()
+    }
+
+    /** [ExoPlayer.prepare] is the step that lifts an idle player; [ExoPlayer.play] is not. */
+    private fun restartHere() {
+        player.prepare()
+        player.play()
+    }
+
+    private fun giveUp(messageRes: Int) {
+        service.toast(service.getString(messageRes))
+        close()
     }
 
     // ---------------- A-B loop ----------------
@@ -280,6 +364,9 @@ class FloatingWindow(
     /** When the decoder last produced a frame, and when one last made it onto the screen. */
     private var framesAdvancedAtMs = 0L
     private var lastCompositedAtMs = 0L
+
+    /** When the player last looked capable of playing — i.e. not wanting to play and unable to. */
+    private var playbackOkAtMs = 0L
 
     /** The video TextureView and the listener ExoPlayer put on it, so [close] can restore it. */
     private var videoTexture: TextureView? = null
@@ -357,6 +444,67 @@ class FloatingWindow(
         recoverySignal = null
     }
 
+    /**
+     * The third signal: playback itself having stopped, which neither frame signal can see.
+     *
+     * Both of those only run while the player claims to be playing, so the state an error actually
+     * leaves behind — [Player.STATE_IDLE] with `playWhenReady` still true — switches the whole
+     * watchdog off. That is why a window could go black and silent with a dead play button and
+     * never produce a single diagnostic line.
+     *
+     * Returns true when playback is the thing at fault, so the caller leaves the frame signals
+     * alone for this tick: a player that is not playing has no frames to miss.
+     */
+    private fun checkPlaybackStall(now: Long, position: Long): Boolean {
+        if (playbackOkAtMs == 0L) playbackOkAtMs = now
+        val state = player.playbackState
+        // Only a player that has been told to play can be stuck. A window the user paused is not
+        // a fault, and neither is one that has reached the end with repeat off.
+        val wedged = player.playWhenReady && when (state) {
+            // An error puts the player here, and nothing but prepare() gets it out again.
+            Player.STATE_IDLE -> true
+            // Buffering that never ends. These are local files: this is a wedge, not a slow link.
+            Player.STATE_BUFFERING -> now - lastPositionAtMs >= BUFFER_STALL_AFTER_MS
+            else -> false
+        }
+        if (!wedged) {
+            playbackOkAtMs = now
+            noteRecovered(recoverySignal == "playback")
+            // Sustained playback, not a single frame, is what proves an error is behind us.
+            if (lastErrorAtMs != 0L && player.isPlaying && now - lastErrorAtMs >= FAILURE_FORGET_MS) {
+                lastErrorAtMs = 0L
+                failuresOnItem = 0
+                itemsSkipped = 0
+            }
+            return false
+        }
+        val threshold = if (state == Player.STATE_IDLE) IDLE_STALL_AFTER_MS else BUFFER_STALL_AFTER_MS
+        // Inside the grace period: [recoverFromError] gets first refusal at its own retry.
+        if (now - playbackOkAtMs < threshold) return true
+
+        recoverySignal = "playback"
+        recoveryStage++
+        logd("floating stalled signal=playback stage=$recoveryStage state=$state pos=$position " +
+            "index=$currentIndex ab=${if (abActive()) "${aMs}-${bMs}" else "none"}")
+
+        when (recoveryStage) {
+            // Preparing again is the entire cure for an idle player — nothing about the window,
+            // its surface or its view is wrong, so none of that is worth disturbing.
+            1 -> restartHere()
+            // Then put it back where it was explicitly, in case the position is what it choked on.
+            2 -> restartAt(player.currentMediaItemIndex, position)
+            // Then assume this video will not play at all and move the queue past it.
+            3 -> {
+                if (player.hasNextMediaItem()) player.seekToNextMediaItem() else player.seekTo(0, 0L)
+                restartHere()
+            }
+            else -> { giveUp(R.string.float_stalled); return true }
+        }
+        // Give the recovery a full interval to take effect before escalating.
+        playbackOkAtMs = now
+        return true
+    }
+
     private val watchdogRunnable = object : Runnable {
         override fun run() {
             checkForStall()
@@ -366,6 +514,22 @@ class FloatingWindow(
 
     private fun checkForStall() {
         val now = SystemClock.elapsedRealtime()
+
+        // Track the playback clock before anything can return early: the playback signal below is
+        // the one case where the player is *not* playing, so the gates that follow would otherwise
+        // keep resetting the very timer it needs.
+        val position = player.currentPosition
+        if (position != lastPositionMs) {
+            lastPositionMs = position
+            lastPositionAtMs = now
+        }
+
+        // Playback stopping is the third way a window dies, and the two frame signals are blind to
+        // it by construction — they only look while the player says it is playing. An error leaves
+        // it idle with playWhenReady still true: picture gone, sound gone, play button dead, and
+        // every gate below satisfied that there is nothing to watch.
+        if (checkPlaybackStall(now, position)) return
+
         val playing = player.playWhenReady && player.playbackState == Player.STATE_READY
         // Frames legitimately stop when the screen is off, and when the system hides overlays over
         // Settings and permission dialogs. Neither is a stall — treating them as one would fight
@@ -375,8 +539,6 @@ class FloatingWindow(
         if (!playing || !power.isInteractive || !onScreen) {
             lastFrameAtMs = now
             lastRenderedFrames = framesRendered()
-            lastPositionMs = player.currentPosition
-            lastPositionAtMs = now
             framesAdvancedAtMs = now
             lastCompositedAtMs = now
             return
@@ -395,11 +557,7 @@ class FloatingWindow(
             noteFrames()
         }
 
-        val pos = player.currentPosition
-        if (pos != lastPositionMs) {
-            lastPositionMs = pos
-            lastPositionAtMs = now
-        }
+        val pos = position
         if (lastFrameAtMs == 0L) lastFrameAtMs = now
         if (lastCompositedAtMs == 0L) lastCompositedAtMs = now
 
@@ -533,8 +691,13 @@ class FloatingWindow(
 
     private fun setupButtons() {
         binding.btnPlayPause.setOnClickListener {
-            if (player.playbackState == Player.STATE_ENDED) { player.seekTo(0); player.play() }
-            else player.playWhenReady = !player.playWhenReady
+            when (player.playbackState) {
+                // An idle player ignores playWhenReady — it has to be prepared again first.
+                // Without this the button is dead and closing the window is the only way out.
+                Player.STATE_IDLE -> restartHere()
+                Player.STATE_ENDED -> { player.seekTo(0); player.play() }
+                else -> player.playWhenReady = !player.playWhenReady
+            }
             poke()
         }
         binding.btnPrev.setOnClickListener { prevItem(); poke() }
