@@ -309,7 +309,17 @@ class FloatingWindow(
         player.play()
     }
 
+    /**
+     * Closes the window and says why.
+     *
+     * Logged as well as toasted, because the toast is not guaranteed to be seen: Android
+     * suppresses toasts from an app whose notifications are turned off, so on a phone where that
+     * is the case every reason Loopr gives for closing a window is swallowed and the window simply
+     * vanishes — which is indistinguishable from the process having been killed.
+     */
     private fun giveUp(messageRes: Int) {
+        logd("floating giving up reason=${service.resources.getResourceEntryName(messageRes)} " +
+            "index=$currentIndex")
         service.toast(service.getString(messageRes))
         close()
     }
@@ -630,6 +640,10 @@ class FloatingWindow(
             reseatSurface()
         }.isSuccess
         logd("floating window rebuilt ok=$restored")
+        // A window that failed to go back up is off the screen while still being counted as open:
+        // a player running with nothing to show for it, and one more way for a window to vanish
+        // without saying anything. Close it properly instead.
+        if (!restored) giveUp(R.string.float_stalled)
     }
 
     /**
@@ -845,6 +859,15 @@ class FloatingWindow(
         externalUri = externalUri,
         folderResolved = folderResolved
     )
+
+    /**
+     * This window as it stands, for [FloatingState] to write down.
+     *
+     * Geometry as well as playback state: a window the system killed should come back the size it
+     * was and where the user left it, not cascaded from the corner like a new one.
+     */
+    fun savedState(): FloatingState.Saved? =
+        if (closed) null else FloatingState.Saved(snapshot(), widthPx, lp.x, lp.y)
 
     /** Back to full screen with everything intact — position, queue, speed, mute and A-B. */
     fun expand() {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13 — 2026-08-29
+- **Fixed floating windows vanishing while you're in another app.** They weren't closing themselves — the whole of Loopr was being shut down. A floating window outlives the activity that opened it, so the only thing holding one is a background process, and when the system reclaims that process every window goes at once, in silence, taking the queue, the position and the A–B points with it because they only ever existed in memory. Loopr now writes the open windows down as you use them and **puts them back when the system restarts it**: same size, same place on screen, same video, carrying on from where it got to.
+  - It gives up after three restores in quick succession and says so, rather than fighting the system for your battery — if something is determined to close Loopr, rebuilding the same process over and over is worse than leaving it shut.
+  - Windows you close yourself stay closed; only ones taken away from you come back.
+  - This covers the process dying for any reason — memory pressure, or a crash. Android shows you nothing in either case, which is why the two are indistinguishable from the outside.
+- **A window that fails to go back up after a rebuild is now closed properly** instead of leaving a player running with nothing on screen — one more way a window could disappear without saying anything.
+- **Every reason Loopr closes a window is now written to the log as well as shown.** Android suppresses an app's toasts when its notifications are turned off, so on a phone where that's the case Loopr's explanations were being swallowed and windows appeared to vanish for no reason. Turn the diagnostics on with `adb shell setprop log.tag.LooprQueue DEBUG`.
+
 ## 1.12 — 2026-08-18
 - **Fixed the floating window that stops playing and turns black.** Root cause found, and it was never the graphics: when a video hits a playback error ExoPlayer parks itself in an idle state, and an idle player does not restart on its own. Loopr moved the queue on to the next video but never told the player to load it — so the window sat there with no picture, no sound, and a play button that did nothing, which is exactly what you had to close and reopen the window to escape. Every recovery path now reloads the video properly.
   - A video that fails is **retried where it stopped** first, because a momentary fault shouldn't cost you the video you were watching. Only if it fails a second time does Loopr move past it, and it says so and closes the window only once nothing in the queue will play.

@@ -234,6 +234,55 @@ class FloatingWindowTest {
         assertTrue("watchdog fired on a healthy A-B loop:\n$log", !log.contains("floating stalled"))
     }
 
+    /**
+     * The windows have to be on disk, because nothing tells a process it is about to be killed.
+     *
+     * When the system reclaims Loopr — for memory, or because an OEM battery manager decided a
+     * background process had had long enough — every floating window goes at once and in silence.
+     * The only thing that can bring them back is what was written down before it happened, so what
+     * this asserts is that the file is both present and current: the right video, and a position
+     * that has moved since the window opened.
+     */
+    @Test
+    fun theOpenWindowsAreWrittenDownSoAKilledProcessCanPutThemBack() {
+        val live = windowFrames().single()
+        // One save goes out as the window opens; this waits for a later tick to prove it stays
+        // current, which is what stops a restored window rewinding to where it was floated.
+        SystemClock.sleep(7_000)
+
+        val saved = FloatingState.load(context)
+        assertEquals("one open window should be written down", 1, saved.size)
+        val only = saved.single()
+        assertEquals(
+            "the saved queue should be the video that is playing",
+            firstVideo()?.title, only.payload.queue[only.payload.index].title
+        )
+        assertTrue(
+            "the saved position should have moved with playback, was ${only.payload.positionMs}",
+            only.payload.positionMs > 0
+        )
+        assertEquals("the saved width should match the live window", live.width(), only.widthPx)
+    }
+
+    /**
+     * A window the user closed must not come back from the dead.
+     *
+     * The restore reads whatever the file holds, so a close that leaves its window behind in there
+     * would reopen it the next time the service starts — the opposite bug, and a worse one.
+     */
+    @Test
+    fun closingAWindowTakesItOffTheRestoreList() {
+        SystemClock.sleep(6_000)
+        assertEquals("the window should be written down first", 1, FloatingState.load(context).size)
+
+        closeAll()
+
+        assertTrue(
+            "a closed window should be off the restore list",
+            FloatingState.load(context).isEmpty()
+        )
+    }
+
     // ---------------- helpers ----------------
 
     private fun firstVideo(): VideoItem? {
