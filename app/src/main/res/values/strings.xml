@@ -72,6 +72,8 @@
     <string name="ab_badge">A–B</string>
     <string name="float_permission_title">Loopr needs to draw over other apps</string>
     <string name="float_permission_body">Floating windows sit on top of whatever else you\'re doing, so Android asks you to allow it once. Without it Loopr falls back to the system mini window, which can only show one video at a time.</string>
+    <string name="notif_permission_title">Let Loopr show notifications?</string>
+    <string name="notif_permission_body">Floating videos run behind a notification — it\'s how you close them all at once, and how Android keeps them playing while you\'re in another app. It also matters for everything else Loopr tells you: Android throws away an app\'s on-screen messages entirely when its notifications are off, so if a window ever closes itself you\'d never find out why.</string>
     <string name="float_permission_denied">Not allowed to draw over other apps — using the system mini window instead</string>
     <string name="float_permission_lost">Permission to draw over other apps was withdrawn — using the system mini window</string>
     <string name="float_limit">%1$d floating videos is the limit</string>

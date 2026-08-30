@@ -114,6 +114,7 @@ app/src/main/
 │   ├── FloatingWindow.kt    # one overlay window: own player, queue, A–B, drag/pinch
 │   ├── FloatingHandoff.kt   # state passed between the activity and a floating window
 │   ├── FloatingState.kt     # the open windows on disk, so a killed process can restore them
+│   ├── NotificationAccess.kt # notification permission — without it Android drops every toast too
 │   ├── VideoAdapter.kt      # RecyclerView grid adapter
 │   ├── VideoItem.kt         # video model
 │   ├── ThumbnailLoader.kt   # async thumbnail loading + LRU cache

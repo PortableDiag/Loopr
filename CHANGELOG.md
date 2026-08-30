@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.14 — 2026-08-29
+- **Loopr now asks for notification permission instead of quietly going without it.** It was declared but never actually requested, so on a fresh install Android denied it by default — and that does more than hide the floating-windows notification: **Android throws away an app's on-screen messages entirely when its notifications are off**. Every explanation Loopr gives you — why a window closed, why a folder couldn't be read — was being discarded before it reached the screen. Loopr asks once, when you turn floating windows on, and explains why first; say no and it won't ask again.
+
 ## 1.13 — 2026-08-29
 - **Fixed floating windows vanishing while you're in another app.** They weren't closing themselves — the whole of Loopr was being shut down. A floating window outlives the activity that opened it, so the only thing holding one is a background process, and when the system reclaims that process every window goes at once, in silence, taking the queue, the position and the A–B points with it because they only ever existed in memory. Loopr now writes the open windows down as you use them and **puts them back when the system restarts it**: same size, same place on screen, same video, carrying on from where it got to.
   - It gives up after three restores in quick succession and says so, rather than fighting the system for your battery — if something is determined to close Loopr, rebuilding the same process over and over is worse than leaving it shut.

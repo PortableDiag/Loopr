@@ -127,6 +127,9 @@ class PlayerActivity : AppCompatActivity() {
             if (granted) tryUpgradeToFolderQueue()
         }
 
+    private val requestNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     private var userRepeatMode = Player.REPEAT_MODE_ALL
     private var shuffle = false
 
@@ -929,6 +932,28 @@ class PlayerActivity : AppCompatActivity() {
         updateChips()
         toast(getString(if (enabled) R.string.float_on else R.string.float_off))
         if (enabled && !canDrawOverlay()) requestOverlayPermission()
+        else if (enabled) askAboutNotifications()
+    }
+
+    /**
+     * Explains before the system prompt, as [requestOverlayPermission] does.
+     *
+     * A dialog rather than a toast on purpose: while this permission is missing Android throws
+     * Loopr's toasts away, so the message explaining why messages go missing would be the first
+     * one lost. Asked from here as well as the library because a video opened from a file manager
+     * may be the only screen of Loopr this user ever sees.
+     */
+    private fun askAboutNotifications() {
+        if (!NotificationAccess.shouldAsk(this)) return
+        NotificationAccess.markAsked(this)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.notif_permission_title)
+            .setMessage(R.string.notif_permission_body)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                requestNotifications.launch(NotificationAccess.PERMISSION)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun currentAbsPosition(): Long = player.currentPosition

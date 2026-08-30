@@ -50,6 +50,9 @@ class MainActivity : AppCompatActivity() {
             if (granted) loadVideos() else showPermissionPrompt()
         }
 
+    private val requestNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         ThemeManager.applySaved(this)
         super.onCreate(savedInstanceState)
@@ -76,9 +79,32 @@ class MainActivity : AppCompatActivity() {
         binding.grantButton.setOnClickListener { requestAccess() }
     }
 
+    /**
+     * Explains before the system prompt, the same way the overlay permission does.
+     *
+     * Note the explanation has to be a dialog and not a toast: a toast is precisely what Android
+     * throws away while this permission is missing, so the one message that would say why messages
+     * are missing would be the first one lost.
+     */
+    private fun askAboutNotifications() {
+        if (!NotificationAccess.shouldAsk(this)) return
+        NotificationAccess.markAsked(this)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.notif_permission_title)
+            .setMessage(R.string.notif_permission_body)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                requestNotifications.launch(NotificationAccess.PERMISSION)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     override fun onStart() {
         super.onStart()
         if (hasPermission()) loadVideos() else showPermissionPrompt()
+        // Only once the media prompt is out of the way, so two dialogs never stack up. This is the
+        // path for anyone who already had floating windows on before Loopr started asking.
+        if (hasPermission() && floatingEnabled()) askAboutNotifications()
     }
 
     private fun hasPermission() =
@@ -150,6 +176,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 .setNegativeButton(android.R.string.cancel, null)
                 .show()
+        } else if (enabled) {
+            // One dialog at a time: the overlay explanation takes precedence, since without it
+            // there are no floating windows to notify about in the first place.
+            askAboutNotifications()
         }
     }
 
