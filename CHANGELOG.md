@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.15 — 2026-09-13
+- **Fixed the crash that took Loopr down — and every floating window with it.** Tapping ⏪ (or double-tapping the left of the screen) in the first ten seconds of a video crashed the whole app whenever the player hadn't worked out the video's length yet: rewinding ten seconds from three seconds in asks for a negative position, and the check meant to keep the position in range couldn't cope with one. Loopr is a single app process, so the floating windows live in it too — one bad tap in the full-screen player closed every window you had open, instantly and without a word. That is why the popups seemed to die on their own.
+  - Found in the phone's own crash log rather than guessed at: `Cannot coerce value to an empty range: maximum -6424 is less than minimum 0`.
+- **A video's length is now picked up whenever the player works it out, not only at the one instant it starts playing.** If the two didn't line up, Loopr treated that video as having no length for as long as it played — a seek bar stuck at zero, a running time stuck at 0:00, no A–B markers, and the rewind crash above armed for the whole video instead of for a fraction of a second.
+
 ## 1.14 — 2026-08-29
 - **Loopr now asks for notification permission instead of quietly going without it.** It was declared but never actually requested, so on a fresh install Android denied it by default — and that does more than hide the floating-windows notification: **Android throws away an app's on-screen messages entirely when its notifications are off**. Every explanation Loopr gives you — why a window closed, why a folder couldn't be read — was being discarded before it reached the screen. Loopr asks once, when you turn floating windows on, and explains why first; say no and it won't ask again.
 

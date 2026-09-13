@@ -92,6 +92,22 @@ class PlayerActivity : AppCompatActivity() {
         // A-B loop boundary poll; small enough that the loop-back is imperceptible.
         internal const val LOOP_POLL_MS = 30L
         internal const val UNSET = Long.MIN_VALUE
+
+        /**
+         * Clamps a seek target to what is actually known about the video.
+         *
+         * On the companion rather than inline so it can be tested without an Activity: the bug it
+         * exists to prevent was pure arithmetic, and it killed the whole process. `durationMs` is
+         * 0 whenever the player has not reported a length yet, and a target can be negative —
+         * rewinding ten seconds inside the first ten. Clamping the ends separately is the point:
+         * building one range out of both produced an empty `0..-6424`, and `coerceIn` throws on
+         * an empty range.
+         */
+        internal fun clampSeek(absMs: Long, durationMs: Long): Long {
+            val floored = absMs.coerceAtLeast(0L)
+            return if (durationMs > 0) floored.coerceAtMost(durationMs) else floored
+        }
+
         private const val HIDE_DELAY = 3500L
 
         private const val MIN_SCALE = 1f
@@ -690,15 +706,7 @@ class PlayerActivity : AppCompatActivity() {
                     if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
                 // Playing again is what clears the failure tally, so one bad file in a folder
                 // doesn't count towards the next one.
-                if (state == Player.STATE_READY) playbackFailures = 0
-                if (state == Player.STATE_READY) {
-                    val d = player.duration
-                    if (d > 0) {
-                        fullDurationMs = d
-                        binding.duration.text = VideoAdapter.formatDuration(d)
-                        updateMarkers()
-                    }
-                }
+                if (state == Player.STATE_READY) { playbackFailures = 0; noteDuration() }
             }
 
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
@@ -956,12 +964,40 @@ class PlayerActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * Picks the duration up as soon as the player knows it, however late that is.
+     *
+     * [Player.STATE_READY] is not a promise that the duration is available, and it arrives once
+     * per item — so sampling only there leaves [fullDurationMs] at 0 for the whole video whenever
+     * the two don't line up, which is how a video can be three seconds in and still have no known
+     * length. That is not just a frozen seek bar: it is also what removes [seekToAbs]'s upper
+     * bound. The progress tick is already running; let it keep asking until it gets an answer.
+     */
+    private fun noteDuration() {
+        if (fullDurationMs > 0) return
+        val d = player.duration
+        if (d <= 0) return
+        fullDurationMs = d
+        binding.duration.text = VideoAdapter.formatDuration(d)
+        updateMarkers()
+    }
+
     private fun currentAbsPosition(): Long = player.currentPosition
 
-    private fun seekToAbs(absMs: Long) {
-        val max = if (fullDurationMs > 0) fullDurationMs else absMs
-        player.seekTo(absMs.coerceIn(0L, max))
-    }
+    /**
+     * Seeks to an absolute position, clamped to whatever is actually known about the video.
+     *
+     * [fullDurationMs] is 0 until the player reports a duration, so for part of every item there
+     * is no upper bound to clamp against — but the floor always applies, and rewinding inside the
+     * first ten seconds asks for a negative position. The old form folded both into one
+     * `coerceIn(0, max)` with `max` falling back to the value being clamped, which for a negative
+     * target is an *empty* range: `coerceIn` throws on those. On the main thread, uncaught.
+     *
+     * Loopr is a single process, so that took every open floating window down with the activity,
+     * silently — the same shape of failure as the v1.7 `lateinit` crash. Clamp the two ends
+     * separately and no range is ever built.
+     */
+    private fun seekToAbs(absMs: Long) = player.seekTo(clampSeek(absMs, fullDurationMs))
 
     private fun seekBy(deltaMs: Long) = seekToAbs(currentAbsPosition() + deltaMs)
 
@@ -1215,6 +1251,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private val progressRunnable = object : Runnable {
         override fun run() {
+            noteDuration()
             if (!isSeeking && fullDurationMs > 0) {
                 val abs = currentAbsPosition()
                 binding.position.text = VideoAdapter.formatDuration(abs)
