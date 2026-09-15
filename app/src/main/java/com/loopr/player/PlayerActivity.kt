@@ -696,7 +696,7 @@ class PlayerActivity : AppCompatActivity() {
             .build()
 
     private fun setupPlayer() {
-        player = ExoPlayer.Builder(this).build()
+        player = PlayerBuffers.newPlayer(this)
         binding.playerView.player = player
         binding.playerView.resizeMode = RESIZE_MODES[resizeIndex]
 
