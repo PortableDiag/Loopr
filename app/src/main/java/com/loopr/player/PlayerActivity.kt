@@ -912,13 +912,14 @@ class PlayerActivity : AppCompatActivity() {
         FloatingHandoff.offerToFloating(state)
         // Silence this copy before the window's own player picks the video up.
         player.playWhenReady = false
-        val started = runCatching {
-            ContextCompat.startForegroundService(
-                this,
-                Intent(this, FloatingPlayerService::class.java)
-                    .setAction(FloatingPlayerService.ACTION_ADD)
-            )
-        }.isSuccess
+        // The window must be granted the queue's files in its own right: this activity is about to
+        // finish, and the read permission a file manager gave us dies with it. See [QueueGrants].
+        val started = QueueGrants.sendWithGrants(
+            Intent(this, FloatingPlayerService::class.java)
+                .setAction(FloatingPlayerService.ACTION_ADD),
+            state.queue,
+            state.index
+        ) { ContextCompat.startForegroundService(this, it) }
         if (!started) {
             FloatingHandoff.takeToFloating()
             player.play()

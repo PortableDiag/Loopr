@@ -313,10 +313,18 @@ class FloatingWindow(
             error.errorCode == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
             error.errorCode == PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED
 
+        // The file manager's read permission is gone and no retry can bring it back: it belonged to
+        // an activity, and only the process that was killed could have held it. See [QueueGrants].
+        val lostAccess = generateSequence(error.cause) { it.cause }
+            .any { it is SecurityException }
+
         logd("floating error code=${error.errorCodeName} index=$index attempt=$failuresOnItem " +
-            "skipped=$itemsSkipped decoder=$decoderProblem pos=$resumeAt")
+            "skipped=$itemsSkipped decoder=$decoderProblem lostAccess=$lostAccess pos=$resumeAt")
 
         when {
+            // Every video in this queue will fail the same way, so skipping through them only
+            // delays the same ending with a less honest message.
+            lostAccess -> giveUp(R.string.float_lost_access)
             // First failure of this video: put it back exactly where it was. A momentary fault
             // costs the viewer nothing this way, and skipping the video they were watching would
             // be the wrong cure for it.
@@ -1041,8 +1049,12 @@ class FloatingWindow(
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or
                     Intent.FLAG_ACTIVITY_SINGLE_TOP
             )
-        runCatching { service.startActivity(intent) }
-            .onFailure { FloatingHandoff.takeToActivity() }
+        // Hand the read permission back along with the video: this window is about to close, and
+        // with the last one closed the service stops and its grants go with it.
+        val started = QueueGrants.sendWithGrants(intent, state.queue, state.index) {
+            service.startActivity(it)
+        }
+        if (!started) FloatingHandoff.takeToActivity()
         close()
     }
 
