@@ -31,6 +31,7 @@ import com.loopr.player.databinding.FloatingWindowBinding
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -56,8 +57,26 @@ class FloatingWindow(
         private const val HIDE_DELAY = 3000L
         /** Below this a window is a thumbnail, not a video. */
         const val MIN_WIDTH_DP = 160
-        /** Above this it stops being a window you can see past. */
-        const val MAX_WIDTH_FRACTION = 0.6f
+        /**
+         * How much of the screen a window may cover.
+         *
+         * Nearly all of it: the old 0.6 ceiling left barely half a step above [MIN_WIDTH_DP] on a
+         * phone — 247dp against a 160dp floor — so growing a window stopped almost as soon as it
+         * started. A window this size is still a window; the gap is what keeps it one.
+         */
+        const val MAX_WIDTH_FRACTION = 0.95f
+        /** The same ceiling the other way round, so a tall video can't run off the screen. */
+        const val MAX_HEIGHT_FRACTION = 0.9f
+
+        /** Picture zoom, matching the full-screen player's range so the gesture behaves the same. */
+        const val MIN_ZOOM = 1f
+        const val MAX_ZOOM = 5f
+        /** What a double tap zooms to from 1x. */
+        private const val DOUBLE_TAP_ZOOM = 2f
+        /** A second tap this soon after the first is a double tap. */
+        private const val DOUBLE_TAP_MS = 250L
+        /** How long the zoom percentage stays up after the fingers stop. */
+        private const val ZOOM_BADGE_MS = 700L
 
         /** How often the stall watchdog looks; cheap enough to run for the window's whole life. */
         private const val STALL_CHECK_MS = 1000L
@@ -100,7 +119,7 @@ class FloatingWindow(
     private val handler = Handler(Looper.getMainLooper())
     private val binding = FloatingWindowBinding.inflate(LayoutInflater.from(themed))
 
-    private val player: ExoPlayer = ExoPlayer.Builder(service).build()
+    private val player: ExoPlayer = PlayerBuffers.newPlayer(service)
 
     private var queue: List<VideoItem> = payload.queue
     private var currentIndex = payload.index
@@ -146,7 +165,25 @@ class FloatingWindow(
     // such floor.
     private var pinching = false
     private var pinchStartDistance = 0f
-    private var pinchStartWidth = 0
+    private var pinchStartScale = 1f
+
+    // Zoom into the picture, exactly as the full-screen player does it: scale the view and pan
+    // within what that scale leaves hanging outside the window, which the root clips.
+    private var videoScale = MIN_ZOOM
+    private var videoTransX = 0f
+    private var videoTransY = 0f
+    private var lastFocusX = 0f
+    private var lastFocusY = 0f
+    private var lastPanX = 0f
+    private var lastPanY = 0f
+
+    /** Waiting to find out whether a tap is a single one; see [onTap]. */
+    private var pendingTap = false
+
+    // Corner-handle resize state.
+    private var resizeStartRawX = 0f
+    private var resizeStartRawY = 0f
+    private var resizeStartWidth = 0
 
     /**
      * Shows the window and starts playing. Separate from the constructor because it leans on the
@@ -162,6 +199,7 @@ class FloatingWindow(
         watchComposition()
 
         setupTouch()
+        setupResizeHandle()
         setupButtons()
         updateAbBadge()
         updateSkipButtons()
@@ -720,13 +758,22 @@ class FloatingWindow(
         binding.btnClose.setOnClickListener { close() }
     }
 
-    /** One finger drags the window, two pinch it; a tap that did neither shows the controls. */
+    /**
+     * Two fingers zoom the picture, one finger drags the window — or pans the picture while it is
+     * zoomed — and a tap that did neither shows the controls.
+     *
+     * Zoom is on the pinch because that is the gesture people reach for to look at something more
+     * closely, and a window small enough to sit over another app is exactly where you need it.
+     * The window's own size moved to [setupResizeHandle]'s corner handle rather than sharing the
+     * pinch: one gesture cannot mean both without guessing which was meant.
+     */
     private fun setupTouch() {
         binding.root.setOnTouchListener { _, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = e.rawX; downRawY = e.rawY
                     downLpX = lp.x; downLpY = lp.y
+                    lastPanX = e.rawX; lastPanY = e.rawY
                     dragging = false
                     pinching = false
                 }
@@ -734,39 +781,138 @@ class FloatingWindow(
                     pinching = true
                     dragging = false
                     pinchStartDistance = spanBetween(e)
-                    pinchStartWidth = widthPx
+                    pinchStartScale = videoScale
+                    lastFocusX = focusX(e); lastFocusY = focusY(e)
                 }
                 MotionEvent.ACTION_MOVE -> when {
                     pinching && e.pointerCount >= 2 -> {
-                        val span = spanBetween(e)
                         if (pinchStartDistance > touchSlop) {
-                            resizeTo((pinchStartWidth * span / pinchStartDistance).roundToInt())
+                            zoomTo(pinchStartScale * spanBetween(e) / pinchStartDistance)
                         }
+                        // Follow the fingers, so the part of the picture between them stays put.
+                        val fx = focusX(e); val fy = focusY(e)
+                        panBy(fx - lastFocusX, fy - lastFocusY)
+                        lastFocusX = fx; lastFocusY = fy
                     }
                     !pinching -> {
                         val dx = e.rawX - downRawX
                         val dy = e.rawY - downRawY
                         if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) dragging = true
                         if (dragging) {
-                            lp.x = downLpX + dx.roundToInt()
-                            lp.y = downLpY + dy.roundToInt()
-                            clampAndApply()
+                            if (videoScale > MIN_ZOOM) {
+                                // Zoomed in, the finger moves the picture rather than the window.
+                                // Double-tap puts it back to 1x and hands dragging back.
+                                panBy(e.rawX - lastPanX, e.rawY - lastPanY)
+                            } else {
+                                lp.x = downLpX + dx.roundToInt()
+                                lp.y = downLpY + dy.roundToInt()
+                                clampAndApply()
+                            }
                         }
+                        lastPanX = e.rawX; lastPanY = e.rawY
                     }
                 }
                 // The finger left over after a pinch mustn't drag the window or toggle the controls.
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                    if (!dragging && !pinching) toggleControls()
+                    if (!dragging && !pinching) onTap()
             }
             true
         }
     }
+
+    /**
+     * A tap shows the controls; two in quick succession zoom instead.
+     *
+     * The single-tap action waits out [DOUBLE_TAP_MS] rather than firing straight away, so a
+     * double tap doesn't flash the controls on its way to zooming.
+     */
+    private fun onTap() {
+        if (pendingTap) {
+            pendingTap = false
+            handler.removeCallbacks(tapRunnable)
+            zoomTo(if (videoScale > MIN_ZOOM) MIN_ZOOM else DOUBLE_TAP_ZOOM)
+            return
+        }
+        pendingTap = true
+        handler.postDelayed(tapRunnable, DOUBLE_TAP_MS)
+    }
+
+    private val tapRunnable = Runnable {
+        pendingTap = false
+        if (!closed) toggleControls()
+    }
+
+    /** Drag the bottom-right corner to resize the window itself. */
+    private fun setupResizeHandle() {
+        binding.resizeHandle.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    resizeStartRawX = e.rawX; resizeStartRawY = e.rawY
+                    resizeStartWidth = widthPx
+                }
+                // Either direction grows the window; whichever the finger moved further wins, so a
+                // diagonal drag does the obvious thing on a window whose shape is fixed.
+                MotionEvent.ACTION_MOVE -> {
+                    val byX = e.rawX - resizeStartRawX
+                    val byY = (e.rawY - resizeStartRawY) * aspect
+                    resizeTo(resizeStartWidth + max(byX, byY).roundToInt())
+                    poke()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> poke()
+            }
+            true
+        }
+    }
+
+    private fun zoomTo(scale: Float) {
+        videoScale = scale.coerceIn(MIN_ZOOM, MAX_ZOOM)
+        if (videoScale == MIN_ZOOM) { videoTransX = 0f; videoTransY = 0f }
+        applyVideoTransform()
+        flashZoom()
+    }
+
+    private fun panBy(dx: Float, dy: Float) {
+        if (videoScale <= MIN_ZOOM) return
+        videoTransX += dx
+        videoTransY += dy
+        applyVideoTransform()
+    }
+
+    /**
+     * Applies the zoom and pan, keeping the picture's edges outside the window.
+     *
+     * The scaled view overhangs the window by half the growth on each side; panning further than
+     * that would drag the video's own edge into view, so the offset is clamped to it.
+     */
+    private fun applyVideoTransform() {
+        val maxX = binding.playerView.width * (videoScale - MIN_ZOOM) / 2f
+        val maxY = binding.playerView.height * (videoScale - MIN_ZOOM) / 2f
+        videoTransX = videoTransX.coerceIn(-maxX, maxX)
+        videoTransY = videoTransY.coerceIn(-maxY, maxY)
+        binding.playerView.scaleX = videoScale
+        binding.playerView.scaleY = videoScale
+        binding.playerView.translationX = videoTransX
+        binding.playerView.translationY = videoTransY
+    }
+
+    /** Says what the zoom is now, then gets out of the way — there is no room for a permanent badge. */
+    private fun flashZoom() {
+        binding.zoomBadge.text = service.getString(R.string.zoom_percent, (videoScale * 100).roundToInt())
+        binding.zoomBadge.visibility = if (videoScale > MIN_ZOOM) View.VISIBLE else View.GONE
+        handler.removeCallbacks(zoomBadgeRunnable)
+        if (videoScale > MIN_ZOOM) handler.postDelayed(zoomBadgeRunnable, ZOOM_BADGE_MS)
+    }
+
+    private val zoomBadgeRunnable = Runnable { binding.zoomBadge.visibility = View.GONE }
 
     private fun spanBetween(e: MotionEvent): Float {
         val dx = e.getX(0) - e.getX(1)
         val dy = e.getY(0) - e.getY(1)
         return hypot(dx, dy)
     }
+
+    private fun focusX(e: MotionEvent) = (e.getX(0) + e.getX(1)) / 2f
+    private fun focusY(e: MotionEvent) = (e.getY(0) + e.getY(1)) / 2f
 
     /**
      * The area a window's x/y are measured in: the display minus the status and navigation bars.
@@ -792,9 +938,17 @@ class FloatingWindow(
 
     /** Resizes to [targetWidth], clamped, keeping the video's aspect ratio. */
     private fun resizeTo(targetWidth: Int) {
-        val (screenW, _) = usableSize()
+        val (screenW, screenH) = usableSize()
         val minW = dp(MIN_WIDTH_DP)
-        val maxW = max((screenW * MAX_WIDTH_FRACTION).roundToInt(), minW)
+        // Whichever ceiling the window's shape reaches first: a tall video runs out of screen
+        // height long before it runs out of width.
+        val maxW = max(
+            min(
+                (screenW * MAX_WIDTH_FRACTION).roundToInt(),
+                (screenH * MAX_HEIGHT_FRACTION * aspect).roundToInt()
+            ),
+            minW
+        )
         widthPx = targetWidth.coerceIn(minW, maxW)
         heightPx = (widthPx / aspect).roundToInt().coerceAtLeast(dp(64))
         lp.width = widthPx

@@ -1,0 +1,11 @@
+<!-- Bottom-right resize grip: three steps of a diagonal, the usual corner-handle shape. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="@color/white">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M21,21L15,21L21,15L21,21ZM21,11L11,21L13.5,21L21,13.5L21,11ZM21,7L7,21L9.5,21L21,9.5L21,7Z" />
+</vector>

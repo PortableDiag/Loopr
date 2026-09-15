@@ -2,6 +2,7 @@
 <!-- One floating (overlay) player. Sized by WindowManager, so everything here fills it. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -32,6 +33,23 @@
         android:fontFamily="sans-serif-medium"
         android:visibility="gone"
         android:text="@string/ab_badge" />
+
+    <!-- Zoom readout: flashed while pinching, since a window this small has no room for chrome. -->
+    <TextView
+        android:id="@+id/zoomBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_margin="6dp"
+        android:background="@drawable/bg_float_badge"
+        android:paddingHorizontal="7dp"
+        android:paddingVertical="2dp"
+        android:textColor="@color/white"
+        android:textSize="10sp"
+        android:fontFamily="sans-serif-medium"
+        android:visibility="gone"
+        tools:ignore="HardcodedText"
+        android:text="100%" />
 
     <FrameLayout
         android:id="@+id/controls"
@@ -105,5 +123,16 @@
                 app:tint="@color/white"
                 android:contentDescription="@string/next" />
         </LinearLayout>
+
+        <!-- Resize grip. Inside the controls, so it appears with them and never sits over the
+             video unasked; the pinch gesture belongs to the picture's zoom now. -->
+        <ImageView
+            android:id="@+id/resizeHandle"
+            android:layout_width="30dp"
+            android:layout_height="30dp"
+            android:layout_gravity="bottom|end"
+            android:padding="3dp"
+            android:src="@drawable/ic_resize_corner"
+            android:contentDescription="@string/float_resize" />
     </FrameLayout>
 </FrameLayout>

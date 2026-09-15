@@ -86,15 +86,15 @@ class FloatingWindowTest {
     fun tearDown() = closeAll()
 
     @Test
-    fun pinchOutGrowsTheWindowAndKeepsItsAspectRatio() {
+    fun draggingTheCornerHandleGrowsTheWindowAndKeepsItsAspectRatio() {
         val before = windowFrames().single()
         val aspectBefore = before.width().toFloat() / before.height()
 
-        pinch(before, fromGap = 60, toGap0 = 240)
+        dragCornerHandle(before, by = 200)
 
         val after = waitForFrameChange(before)
         assertTrue(
-            "pinching out should widen the window: ${before.width()} -> ${after.width()}",
+            "the handle should widen the window: ${before.width()} -> ${after.width()}",
             after.width() > before.width()
         )
         val aspectAfter = after.width().toFloat() / after.height()
@@ -105,29 +105,49 @@ class FloatingWindowTest {
     }
 
     @Test
-    fun pinchOutStopsAtSixtyPercentOfTheScreen() {
-        repeat(3) { pinch(windowFrames().single(), fromGap = 40, toGap0 = 460) }
+    fun theCornerHandleStopsAtTheCeiling() {
+        repeat(3) { dragCornerHandle(windowFrames().single(), by = 1200) }
         SystemClock.sleep(500)
 
-        val ceiling = (screenWidth() * FloatingWindow.MAX_WIDTH_FRACTION).roundToInt()
+        // The window is capped by whichever of width and height its shape reaches first; on a
+        // phone in portrait a 16:9 video always reaches the width one, and that is the ceiling
+        // this asserts. A window is allowed to stop short of it only by being taller than the
+        // screen, which this fixture is not.
         val width = windowFrames().single().width()
+        val ceiling = (screenWidth() * FloatingWindow.MAX_WIDTH_FRACTION).roundToInt()
+        val oldCeiling = (screenWidth() * 0.6f).roundToInt()
         assertTrue("width $width should not exceed the $ceiling ceiling", width <= ceiling + 2)
-        assertTrue("width $width should have grown towards the ceiling", width >= ceiling - 2)
+        assertTrue(
+            "width $width should have grown past the old $oldCeiling ceiling",
+            width > oldCeiling
+        )
     }
 
     @Test
-    fun pinchInStopsAtTheMinimumWidth() {
-        // Both fingers have to start inside the window, or the gesture goes to whatever is behind it.
-        repeat(3) {
-            val frame = windowFrames().single()
-            pinch(frame, fromGap = (frame.width() * 0.35f).roundToInt(), toGap0 = 16)
-        }
+    fun theCornerHandleStopsAtTheMinimumWidth() {
+        repeat(3) { dragCornerHandle(windowFrames().single(), by = -1200) }
         SystemClock.sleep(500)
 
         val floor = (FloatingWindow.MIN_WIDTH_DP * density()).roundToInt()
         val width = windowFrames().single().width()
         assertTrue("width $width should not go below the $floor floor", width >= floor - 2)
         assertTrue("width $width should have shrunk to the floor", width <= floor + 2)
+    }
+
+    /**
+     * The gesture split that came with picture zoom: pinching used to resize the window, and now
+     * it must leave the window exactly where it is — the zoom happens inside it, and the window's
+     * own size belongs to the corner handle.
+     */
+    @Test
+    fun pinchingZoomsThePictureAndLeavesTheWindowAlone() {
+        val before = windowFrames().single()
+
+        pinch(before, fromGap = 60, toGap0 = 240)
+        SystemClock.sleep(600)
+
+        val after = windowFrames().single()
+        assertEquals("a pinch must not resize the window any more", before, after)
     }
 
     @Test
@@ -383,6 +403,42 @@ class FloatingWindowTest {
             listOf(cx - toGap to cy, cx + toGap to cy)
         )
         inject(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, listOf(cx - toGap to cy))
+    }
+
+    /**
+     * Drags the resize grip in the window's bottom-right corner.
+     *
+     * The grip lives inside the controls, so they have to be showing first — and the tap that
+     * shows them must land clear of the transport buttons in the middle.
+     */
+    private fun dragCornerHandle(frame: Rect, by: Int, steps: Int = 10) {
+        showControls(frame)
+        val inset = (15 * density()).roundToInt()
+        val x = (frame.right - inset).toFloat()
+        val y = (frame.bottom - inset).toFloat()
+        val down = SystemClock.uptimeMillis()
+        inject(down, down, MotionEvent.ACTION_DOWN, listOf(x to y))
+        for (i in 1..steps) {
+            inject(
+                down, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE,
+                listOf((x + by * i / steps) to (y + by * i / steps))
+            )
+            SystemClock.sleep(16)
+        }
+        inject(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP,
+            listOf((x + by) to (y + by)))
+        SystemClock.sleep(200)
+    }
+
+    /** A single tap near the left edge — clear of ⏮ ⏯ ⏭ — brings the controls up if they are hidden. */
+    private fun showControls(frame: Rect) {
+        val x = (frame.left + 10 * density()).toFloat()
+        val y = frame.centerY().toFloat()
+        val down = SystemClock.uptimeMillis()
+        inject(down, down, MotionEvent.ACTION_DOWN, listOf(x to y))
+        inject(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, listOf(x to y))
+        // Past the double-tap window, so the next gesture isn't read as the second half of one.
+        SystemClock.sleep(500)
     }
 
     private fun drag(frame: Rect, dx: Int, dy: Int, steps: Int = 10) {
