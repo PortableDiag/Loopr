@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug only: mints an API key from adb (see the class). Exported so the shell can reach it. -->
+        <receiver
+            android:name=".api.DebugApiKeyReceiver"
+            android:exported="true" />
+    </application>
+</manifest>

@@ -59,7 +59,7 @@ object PlayQueue {
 }
 
 @UnstableApi
-class PlayerActivity : AppCompatActivity() {
+class PlayerActivity : AppCompatActivity(), ControllablePlayer {
 
     companion object {
         private const val TAG = "LooprQueue"
@@ -182,6 +182,9 @@ class PlayerActivity : AppCompatActivity() {
     private var lastFocusX = 0f
     private var lastFocusY = 0f
 
+    /** This player's number in the local API, for as long as it is open. */
+    override val playerId: Int = Players.newId()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Before anything is built: a video opened from another app has to be relaunched into its
@@ -216,6 +219,7 @@ class PlayerActivity : AppCompatActivity() {
         updateChips()
         showControls()
         maybeRequestPermissionForFolder()
+        Players.register(this)
     }
 
     /** Resolves the play queue from the static handoff, or an external VIEW intent. */
@@ -1466,6 +1470,125 @@ class PlayerActivity : AppCompatActivity() {
      *  `adb shell setprop log.tag.LooprQueue DEBUG`. */
     private fun logd(msg: String) { if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, msg) }
 
+    // ---------------- Local API ----------------
+    // What [com.loopr.player.api.AndroidBackend] calls. Each is the button's own code path minus
+    // its toast: the caller gets an answer instead, and the person isn't shown messages for taps
+    // they didn't make.
+
+    override fun status() = PlayerStatus(
+        kind = PlayerStatus.FULL_SCREEN,
+        title = queue.getOrNull(player.currentMediaItemIndex)?.title ?: "",
+        uri = queue.getOrNull(player.currentMediaItemIndex)?.uri?.toString() ?: "",
+        index = player.currentMediaItemIndex,
+        queueSize = queue.size,
+        positionMs = player.currentPosition,
+        durationMs = fullDurationMs.takeIf { it > 0 } ?: player.duration.coerceAtLeast(0L),
+        playing = player.isPlaying,
+        playWhenReady = player.playWhenReady,
+        playbackState = player.playbackState,
+        speed = SPEEDS[speedIndex],
+        muted = muted,
+        resizeIndex = resizeIndex,
+        repeatMode = userRepeatMode,
+        shuffle = shuffle,
+        aMs = aMs,
+        bMs = bMs,
+        zoom = videoScale,
+        inPip = isInPipMode()
+    )
+
+    override fun queueItems(): List<VideoItem> = queue
+
+    override fun play() {
+        when (player.playbackState) {
+            Player.STATE_IDLE -> { player.prepare(); player.play() }
+            Player.STATE_ENDED -> { player.seekTo(0L); player.play() }
+            else -> player.play()
+        }
+    }
+
+    override fun pause() = player.pause()
+
+    override fun seekTo(positionMs: Long) = seekToAbs(positionMs)
+
+    override fun next() = nextItem()
+
+    override fun previous() = prevItem()
+
+    override fun jumpTo(index: Int) {
+        player.seekTo(index, 0L)
+        play()
+    }
+
+    override fun setSpeedIndex(index: Int) {
+        speedIndex = index
+        player.setPlaybackSpeed(SPEEDS[speedIndex])
+        updateChips()
+    }
+
+    override fun setMuted(muted: Boolean) {
+        if (muted != this.muted) toggleMute()
+    }
+
+    override fun setResizeIndex(index: Int) {
+        resizeIndex = index
+        binding.playerView.resizeMode = RESIZE_MODES[resizeIndex]
+        updateChips()
+    }
+
+    override fun setRepeatMode(mode: Int) {
+        userRepeatMode = mode
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE).edit().putInt(KEY_REPEAT, mode).apply()
+        player.repeatMode = mode
+        updateChips()
+    }
+
+    override fun setShuffle(on: Boolean) {
+        shuffle = on
+        player.shuffleModeEnabled = on
+        getSharedPreferences(ThemeManager.PREFS, MODE_PRIVATE).edit().putBoolean(KEY_SHUFFLE, on).apply()
+        updateChips()
+    }
+
+    override fun setZoom(scale: Float) {
+        videoScale = scale.coerceIn(MIN_SCALE, MAX_SCALE)
+        if (videoScale == MIN_SCALE) { videoTransX = 0f; videoTransY = 0f }
+        applyVideoTransform()
+    }
+
+    override fun setAbPoints(aMs: Long, bMs: Long) {
+        this.aMs = aMs
+        this.bMs = bMs
+        applyAb()
+    }
+
+    override fun clearAbPoints() {
+        aMs = UNSET; bMs = UNSET
+        applyAb()
+    }
+
+    override fun closePlayer() = finish()
+
+    /**
+     * Floats this video, or says why it can't. The caller has already checked the overlay
+     * permission and the window cap, so [floatVideo] never reaches its dialogs from here.
+     */
+    fun floatFromApi(): Boolean = floatVideo()
+
+    /** Null when the system window opened; otherwise why not. */
+    fun pipFromApi(): String? {
+        if (!supportsPip()) return getString(R.string.pip_unsupported)
+        if (isInPipMode()) return null
+        return runCatching { enterPictureInPictureMode(buildPipParams()) }
+            .fold({ if (it) null else "Android declined: the player has to be on screen to shrink into picture-in-picture" },
+                { "Android declined: ${it.message}" })
+    }
+
+    fun rotate() = toggleOrientation()
+
+    /** A setting the chips show was changed from outside this screen. */
+    fun settingsChanged() = updateChips()
+
     // ---------------- Picture in Picture ----------------
 
     private fun supportsPip(): Boolean =
@@ -1589,6 +1712,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         liveInstances.remove(this)
+        Players.unregister(this)
         handler.removeCallbacksAndMessages(null)
         if (this::player.isInitialized) player.release()
     }

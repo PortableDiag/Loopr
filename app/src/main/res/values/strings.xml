@@ -88,4 +88,43 @@
     <string name="float_close_all">Close all</string>
     <string name="float_channel">Floating windows</string>
     <string name="zoom_percent">%1$d%%</string>
+
+    <!-- Local API -->
+    <string name="api_title">Local API</string>
+    <string name="api_switch">Local API</string>
+    <string name="api_channel">Local API</string>
+    <string name="api_status_off">Off. While on, scripts and agents on this phone can use Loopr through the keys below — each only the tools you switch on for it.</string>
+    <string name="api_status_starting">Starting…</string>
+    <string name="api_status_on">Listening on %1$s:%2$d, this phone only.</string>
+    <string name="api_port">Port %d</string>
+    <string name="api_port_title">Port</string>
+    <string name="api_port_body">1024 to 65535. Change it only if another app already uses this one.</string>
+    <string name="api_port_taken">Port %d is in use by another app. Pick another port and switch the API on again.</string>
+    <string name="api_start_failed">Could not listen on port %1$d: %2$s</string>
+    <string name="api_keys">Keys</string>
+    <string name="api_keys_body">One key per script or agent. A new key can do nothing until you tick what it may do.</string>
+    <string name="api_no_keys">No keys yet.</string>
+    <string name="api_new_key">New key</string>
+    <string name="api_key_name_hint">Who is it for?</string>
+    <string name="api_key_name_body">A name to recognise it by in the list.</string>
+    <string name="api_create">Create</string>
+    <string name="api_key_made">Your new key</string>
+    <string name="api_key_made_body">%s\n\nThis is the only time it is shown. Loopr keeps only a fingerprint of it, so a lost key is revoked and replaced.\n\nNext: choose what it may do. Everything is off until you do.</string>
+    <string name="api_copy">Copy, then choose tools</string>
+    <string name="api_next">Choose tools</string>
+    <string name="api_key_tools">%1$d of %2$d tools on</string>
+    <string name="api_key_used">used %1$s, %2$d calls</string>
+    <string name="api_key_unused">not used yet</string>
+    <string name="api_key_choose_tools">Choose what it may do</string>
+    <string name="api_key_activity">Recent calls</string>
+    <string name="api_key_rename">Rename</string>
+    <string name="api_key_revoke">Revoke</string>
+    <string name="api_tools_for">What %s may do</string>
+    <string name="api_activity_for">Recent calls by %s</string>
+    <string name="api_save">Save</string>
+    <string name="api_revoke_body">%s stops working at once. Anything using it needs a new key.</string>
+    <string name="api_notification_title">Loopr API is on</string>
+    <string name="api_notification_text">Listening on %1$s:%2$d, this phone only</string>
+    <string name="api_stop">Stop</string>
+    <string name="api_help">KEY=lp_…\ncurl -H \"X-API-Key: $KEY\" 127.0.0.1:%1$d/api/docs\n\nFrom a computer:\nadb forward tcp:%1$d tcp:%1$d\n\nAgents: MCP at http://127.0.0.1:%1$d/mcp</string>
 </resources>

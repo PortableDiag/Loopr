@@ -21,4 +21,8 @@
         android:title="@string/floating_windows"
         android:checkable="true"
         app:showAsAction="never" />
+    <item
+        android:id="@+id/action_api"
+        android:title="@string/api_title"
+        app:showAsAction="never" />
 </menu>

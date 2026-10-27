@@ -17,8 +17,8 @@ android {
         applicationId "com.loopr.player"
         minSdk 26
         targetSdk 35
-        versionCode 17
-        versionName "1.16"
+        versionCode 18
+        versionName "1.17"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -70,6 +70,12 @@ dependencies {
 
     // Coroutines for async thumbnail loading
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+
+    // The local API's routing, auth and error shapes run on the JVM against a fake backend. The
+    // android.jar unit tests compile against stubs org.json with methods that throw; the real one,
+    // earlier on the test classpath, is what lets the API's JSON be exercised at all.
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20231013'
 
     // Instrumented tests. A floating window is an overlay drawn by a service, so the only way to
     // exercise its pinch-resize is to inject real multi-pointer events on a device.

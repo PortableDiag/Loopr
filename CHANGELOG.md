@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.17 — 2026-10-27
+- **A local API, so scripts and agents on your phone can use Loopr** — the same shape as DialX, TextX and NotifX, so PhoneAPI can take it on as a provider later without changes. **Off until you turn it on** (⋮ › Local API).
+  - **It does everything the app does:** browse and search the library and its folders, fetch thumbnails, open a video full screen or in a floating window (with the whole library, its folder, or just that video as the queue), play, pause, seek, rewind, skip and jump through the queue, set and clear the A–B loop, change speed, mute, resize, repeat, shuffle and zoom, float, expand, picture‑in‑picture, rotate, move and resize floating windows, close players, and read or change the settings.
+  - **This phone only**, on `127.0.0.1:8792`. A web page can't reach it by pointing its own name at the phone.
+  - **A key per caller, and a new key can do nothing.** Each of the 12 tools is its own switch, off until you tick it; changes apply at once, a key can be revoked at any time, and each keeps a list of its recent calls. Loopr stores only a fingerprint of a key, so it is shown once.
+  - REST for scripts, **MCP** for agents, and one gate behind both. `GET /api/docs` with a key is the full reference.
+  - When it can't do something it says why and what's left — floating needs "Display over other apps", three windows is the limit, B has to come after A — rather than failing silently. Granting Android permissions stays with you.
+- The library list moved out of the main screen so the grid and the API read exactly the same videos in the same order.
+
 ## 1.16 — 2026-09-14
 - **Fixed floating windows dying with "Can't play this video in a window" after you open a video from a different folder.** Your description of it was exactly right, and the cause is the folder: the permission to read a video that a file manager gives Loopr belongs to the *screen* that received it, and Loopr closes that screen the moment it hands the video to a floating window. The window keeps playing on the file it already has open — and dies the next time it re-opens it, which is every few loops of a short clip and every move to the next video. **Opening another video from the same folder hid it**, because a file manager hands over the whole folder, so the older window's file got its permission renewed by accident. From a different folder, nothing renewed it.
   - From your phone's own log: `SecurityException: Permission Denial: opening provider androidx.core.content.FileProvider from com.loopr.player … that is not exported from UID …`, reported to the player as a plain I/O failure — which is why Loopr thought the *video* was broken, skipped to the next one, and closed the window when that failed too.

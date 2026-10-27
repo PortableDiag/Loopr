@@ -34,6 +34,28 @@ A modern, dark‑first **video player for Android** built around one thing most 
 - Runtime media permission flow.
 - **Material 3** UI with **light / dark / follow‑system** themes — **defaults to dark**.
 
+### Local API (off until you turn it on)
+Scripts and agents on the phone can drive Loopr: browse the library, open videos full screen or floating, play, pause, seek, skip, set the A–B loop, change speed, mute, resize, zoom, move and resize floating windows, and change settings — everything the app's own buttons do. **⋮ › Local API** switches it on and makes the keys.
+
+- **This phone only.** It listens on `127.0.0.1:8792` and refuses any request whose `Host` is not the phone's own (so a web page can't reach it by DNS rebinding). From a computer: `adb forward tcp:8792 tcp:8792`.
+- **A key per caller, every tool off until you switch it on.** A new key can do nothing. You tick what it may do — each of the 12 tools is its own switch — and can change that or revoke the key at any time; a change applies to the next call. Loopr keeps only a fingerprint of a key, so it is shown once.
+- **Every key has a recent-calls list** and a count, and is capped at 240 calls a minute.
+- **One gate, three ways in:** REST for scripts, MCP (`POST /mcp`) for agents, and `POST /api/tools/{name}` for either. All three run the same tool through the same check. Tool names are `loopr.*` (MCP spells them `loopr_*`) so they stay unambiguous when PhoneAPI lists every app's tools together.
+- **A refusal says why and what's left** — e.g. floating needs Android's "Display over other apps", three windows is the most at once, B has to come after A. Only you can grant Android permissions; `GET /api/settings` says which Loopr holds.
+
+```bash
+KEY=lp_…                                                   # ⋮ › Local API › New key
+curl -s -H "X-API-Key: $KEY" 127.0.0.1:8792/api/docs        # the full reference
+curl -s -H "X-API-Key: $KEY" "127.0.0.1:8792/api/videos?q=cat"
+curl -s -H "X-API-Key: $KEY" -X POST 127.0.0.1:8792/api/open -d '{"video_id":42,"queue":"folder","window":"floating"}'
+curl -s -H "X-API-Key: $KEY" -X PUT 127.0.0.1:8792/api/players/1/ab -d '{"a_ms":5000,"b_ms":9000}'
+curl -s -H "X-API-Key: $KEY" -X PATCH 127.0.0.1:8792/api/players/1 -d '{"speed":0.5}'
+```
+
+Port 8792 is clear of the other in‑house local APIs (Lull 8787, TextX 8788, DialX 8789, NotifX 8790, KJVBible 8794, ClipX 8795, ThereminX 8796, AppManager 8797, GhostUser 8799) and can be changed on the same screen.
+
+Android 15 won't let an app start a foreground service from the background just because it holds "Display over other apps" — it also needs a window showing — so the API is switched on from its screen, and comes back by itself after a reboot if it was on.
+
 ---
 
 ## Screenshots
@@ -101,6 +123,21 @@ adb shell appops set com.loopr.player SYSTEM_ALERT_WINDOW allow   # the test nee
 ./gradlew connectedDebugAndroidTest
 ```
 
+### Unit tests
+The local API's routing, auth, tool switches, rate cap, MCP and error shapes run on the JVM against a
+fake backend, including a walk of every route `GET /api/docs` advertises:
+```bash
+./gradlew testDebugUnitTest
+```
+A debug build can mint a key from adb (it logs the key, which is why release builds don't have it).
+The broadcast arrives in the background, which Android 15 won't start a foreground service from, so
+allowlist Loopr for a minute first:
+```bash
+adb shell cmd deviceidle tempwhitelist -d 60000 com.loopr.player
+adb shell am broadcast -n com.loopr.player/.api.DebugApiKeyReceiver --es name test --es tools all
+adb logcat -d -s Loopr.ApiDebug        # key, port, tools
+```
+
 ---
 
 ## Project structure
@@ -120,7 +157,17 @@ app/src/main/
 │   ├── VideoItem.kt         # video model
 │   ├── ThumbnailLoader.kt   # async thumbnail loading + LRU cache
 │   ├── AbSeekBar.kt         # SeekBar that draws the A/B markers and loop region
-│   └── ThemeManager.kt      # light/dark/system theme persistence
+│   ├── ThemeManager.kt      # light/dark/system theme persistence
+│   ├── VideoLibrary.kt      # the MediaStore query the grid and the API share
+│   ├── Players.kt           # every open player, numbered, and what the API may ask of one
+│   └── api/                 # the local API — off unless you switch it on
+│       ├── LocalApi.kt      # routes, auth, tool gates, rate cap, MCP, /api/docs (no Android types)
+│       ├── Tools.kt         # the 12 tools, each its own switch
+│       ├── AndroidBackend.kt # what each tool does on the phone
+│       ├── ApiKey.kt · ApiKeys.kt # keys as hashes, with their tools and recent calls
+│       ├── ApiService.kt    # the foreground service that keeps it listening; boot receiver
+│       ├── ApiActivity.kt   # ⋮ › Local API
+│       └── Http.kt · ApiServer.kt · MainThread.kt # the shared in-house HTTP layer
 └── res/                     # layouts, Material 3 themes, vector icons, adaptive launcher
 ```
 

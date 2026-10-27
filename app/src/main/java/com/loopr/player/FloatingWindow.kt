@@ -49,7 +49,7 @@ class FloatingWindow(
     startWidthPx: Int,
     startX: Int,
     startY: Int
-) {
+) : ControllablePlayer {
 
     companion object {
         /** Same tag as the queue diagnostics: `setprop log.tag.LooprQueue DEBUG` turns both on. */
@@ -185,6 +185,9 @@ class FloatingWindow(
     private var resizeStartRawY = 0f
     private var resizeStartWidth = 0
 
+    /** This window's number in the local API, for as long as it is open. */
+    override val playerId: Int = Players.newId()
+
     /**
      * Shows the window and starts playing. Separate from the constructor because it leans on the
      * listeners and runnables declared below — they only exist once construction has finished.
@@ -205,6 +208,7 @@ class FloatingWindow(
         updateSkipButtons()
 
         wm.addView(binding.root, lp)
+        Players.register(this)
 
         player.addListener(playerListener)
         player.setMediaItems(queue.map { toMediaItem(it) }, currentIndex, payload.positionMs)
@@ -1003,6 +1007,102 @@ class FloatingWindow(
 
     private fun poke() { if (controlsVisible) scheduleHide() }
 
+    // ---------------- Local API ----------------
+    // The same paths as this window's buttons, for [com.loopr.player.api.AndroidBackend].
+
+    override fun status(): PlayerStatus {
+        val s = snapshot()
+        return PlayerStatus(
+            kind = PlayerStatus.FLOATING,
+            title = title,
+            uri = queue.getOrNull(currentIndex)?.uri?.toString() ?: "",
+            index = currentIndex,
+            queueSize = queue.size,
+            positionMs = player.currentPosition,
+            durationMs = player.duration.coerceAtLeast(0L),
+            playing = player.isPlaying,
+            playWhenReady = player.playWhenReady,
+            playbackState = player.playbackState,
+            speed = player.playbackParameters.speed,
+            muted = s.muted,
+            resizeIndex = s.resizeIndex,
+            repeatMode = userRepeatMode,
+            shuffle = player.shuffleModeEnabled,
+            aMs = aMs,
+            bMs = bMs,
+            zoom = videoScale,
+            bounds = android.graphics.Rect(lp.x, lp.y, lp.x + widthPx, lp.y + heightPx)
+        )
+    }
+
+    override fun queueItems(): List<VideoItem> = queue
+
+    override fun play() {
+        when (player.playbackState) {
+            Player.STATE_IDLE -> restartHere()
+            Player.STATE_ENDED -> { player.seekTo(0); player.play() }
+            else -> player.play()
+        }
+    }
+
+    override fun pause() = player.pause()
+
+    override fun seekTo(positionMs: Long) =
+        player.seekTo(PlayerActivity.clampSeek(positionMs, player.duration.coerceAtLeast(0L)))
+
+    override fun next() = nextItem()
+
+    override fun previous() = prevItem()
+
+    override fun jumpTo(index: Int) {
+        player.seekTo(index, 0L)
+        play()
+    }
+
+    override fun setSpeedIndex(index: Int) = player.setPlaybackSpeed(PlayerActivity.SPEEDS[index])
+
+    override fun setMuted(muted: Boolean) { player.volume = if (muted) 0f else 1f }
+
+    override fun setResizeIndex(index: Int) {
+        binding.playerView.resizeMode = PlayerActivity.RESIZE_MODES[index]
+    }
+
+    override fun setRepeatMode(mode: Int) {
+        userRepeatMode = mode
+        player.repeatMode = mode
+        service.getSharedPreferences(ThemeManager.PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(PlayerActivity.KEY_REPEAT, mode).apply()
+    }
+
+    override fun setShuffle(on: Boolean) {
+        player.shuffleModeEnabled = on
+        service.getSharedPreferences(ThemeManager.PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(PlayerActivity.KEY_SHUFFLE, on).apply()
+    }
+
+    override fun setZoom(scale: Float) = zoomTo(scale)
+
+    override fun setAbPoints(aMs: Long, bMs: Long) {
+        this.aMs = aMs
+        this.bMs = bMs
+        updateLoopWatcher()
+        updateAbBadge()
+    }
+
+    override fun clearAbPoints() = setAbPoints(PlayerActivity.UNSET, PlayerActivity.UNSET)
+
+    override fun closePlayer() = close()
+
+    /** Moves the window, kept on screen as a drag would keep it. */
+    fun moveTo(x: Int, y: Int) {
+        lp.x = x
+        lp.y = y
+        clampAndApply()
+    }
+
+    /** Resizes the window, clamped and in the video's shape as the corner handle does. */
+    fun resizeWidth(width: Int) = resizeTo(width)
+
     // ---------------- Hand-off out ----------------
 
     private fun snapshot(): FloatingHandoff.Payload = FloatingHandoff.Payload(
@@ -1061,6 +1161,7 @@ class FloatingWindow(
     fun close() {
         if (closed) return
         closed = true
+        Players.unregister(this)
         handler.removeCallbacksAndMessages(null)
         player.removeListener(playerListener)
         // Put ExoPlayer's own listener back before releasing: it unsets the listener itself on the

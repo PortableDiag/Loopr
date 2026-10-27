@@ -1,13 +1,11 @@
 package com.loopr.player
 
 import android.Manifest
-import android.content.ContentUris
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
 import android.provider.Settings
 import android.view.Menu
 import android.view.MenuItem
@@ -22,6 +20,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
+import com.loopr.player.api.ApiActivity
 import com.loopr.player.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -137,6 +136,7 @@ class MainActivity : AppCompatActivity() {
         R.id.action_theme -> { showThemeDialog(); true }
         R.id.action_multi -> { toggleMultiInstance(item); true }
         R.id.action_floating -> { toggleFloating(item); true }
+        R.id.action_api -> { startActivity(Intent(this, ApiActivity::class.java)); true }
         else -> false
     }
 
@@ -242,48 +242,5 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun queryVideos(): List<VideoItem> {
-        val list = ArrayList<VideoItem>()
-        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
-        else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-
-        val projection = arrayOf(
-            MediaStore.Video.Media._ID,
-            MediaStore.Video.Media.DISPLAY_NAME,
-            MediaStore.Video.Media.DURATION,
-            MediaStore.Video.Media.SIZE,
-            MediaStore.Video.Media.WIDTH,
-            MediaStore.Video.Media.HEIGHT,
-            MediaStore.Video.Media.BUCKET_DISPLAY_NAME
-        )
-        val sort = "${MediaStore.Video.Media.DATE_ADDED} DESC"
-
-        contentResolver.query(collection, projection, null, null, sort)?.use { c ->
-            val idCol = c.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
-            val nameCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-            val durCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
-            val sizeCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
-            val wCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
-            val hCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
-            val bucketCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
-            while (c.moveToNext()) {
-                val id = c.getLong(idCol)
-                val uri: Uri = ContentUris.withAppendedId(collection, id)
-                list.add(
-                    VideoItem(
-                        id = id,
-                        uri = uri,
-                        title = c.getString(nameCol) ?: "Video",
-                        durationMs = c.getLong(durCol),
-                        sizeBytes = c.getLong(sizeCol),
-                        width = c.getInt(wCol),
-                        height = c.getInt(hCol),
-                        bucket = c.getString(bucketCol) ?: ""
-                    )
-                )
-            }
-        }
-        return list
-    }
+    private fun queryVideos(): List<VideoItem> = VideoLibrary.query(this).map { it.item }
 }
