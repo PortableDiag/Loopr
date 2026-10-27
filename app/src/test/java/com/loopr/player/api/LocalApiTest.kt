@@ -42,10 +42,10 @@ class LocalApiTest {
     private fun setup(tools: Set<String> = allTools): Triple<LocalApi, FakeBackend, FakeKeys> {
         val keys = FakeKeys(listOf(ApiKey(1, "script", KeyHash.hash(raw), raw.takeLast(4), tools)))
         val backend = FakeBackend()
-        return Triple(LocalApi(keys, backend, 8792) { now }, backend, keys)
+        return Triple(LocalApi(keys, backend, 8793) { now }, backend, keys)
     }
 
-    private fun req(method: String, path: String, body: String = "", key: String? = raw, host: String = "127.0.0.1:8792"): ApiRequest {
+    private fun req(method: String, path: String, body: String = "", key: String? = raw, host: String = "127.0.0.1:8793"): ApiRequest {
         val headers = mutableMapOf("host" to host)
         if (key != null) headers["x-api-key"] = key
         val q = path.substringAfter('?', "")
@@ -75,8 +75,8 @@ class LocalApiTest {
     @Test
     fun `a foreign Host is refused even with the right key`() {
         val (api, backend) = setup()
-        assertEquals(403, api.handle(req("GET", "/api/players", host = "evil.example:8792")).status)
-        assertEquals(200, api.handle(req("GET", "/api/players", host = "localhost:8792")).status)
+        assertEquals(403, api.handle(req("GET", "/api/players", host = "evil.example:8793")).status)
+        assertEquals(200, api.handle(req("GET", "/api/players", host = "localhost:8793")).status)
         assertEquals(1, backend.calls.size)
     }
 

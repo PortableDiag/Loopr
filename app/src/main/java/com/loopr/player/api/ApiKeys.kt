@@ -17,12 +17,12 @@ class ApiKeys(context: Context) : KeyStore {
 
     companion object {
         /**
-         * Clear of the other in-house local APIs as they stood on 2026-10-27: Lull 8787, TextX
-         * 8788, DialX 8789, NotifX 8790 (whose stub agent takes 8791 on the computer, the far end
-         * of an `adb forward`), KJVBible 8794, ClipX 8795, ThereminX 8796, AppManager 8797,
-         * GhostUser 8799.
+         * Free on the phone and on the computer at the far end of an `adb forward`. As of
+         * 2026-10-27: Lull 8787, TextX 8788, DialX 8789, NotifX 8790, PermaFrost and Sift 8791,
+         * TrellisBridge 8792 on the computer, KJVBible 8794, ClipX 8795, ThereminX 8796,
+         * AppManager 8797, GhostUser and VolumePerApp 8799.
          */
-        const val DEFAULT_PORT = 8792
+        const val DEFAULT_PORT = 8793
 
         /** Loopback only: off the phone, use `adb forward`, or PhoneAPI once it pairs agents. */
         const val BIND = "127.0.0.1"

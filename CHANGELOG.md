@@ -1,9 +1,12 @@
 # Changelog
 
+## 1.18 — 2026-10-27
+- **The local API moved to port 8793.** 8792 was free on the phone but not on the computer, where TrellisBridge already listens on it — so `adb forward tcp:8792 tcp:8792` failed there. 8793 is free on both and in every other in‑house app. If you already changed the port yourself, yours is kept.
+
 ## 1.17 — 2026-10-27
 - **A local API, so scripts and agents on your phone can use Loopr** — the same shape as DialX, TextX and NotifX, so PhoneAPI can take it on as a provider later without changes. **Off until you turn it on** (⋮ › Local API).
   - **It does everything the app does:** browse and search the library and its folders, fetch thumbnails, open a video full screen or in a floating window (with the whole library, its folder, or just that video as the queue), play, pause, seek, rewind, skip and jump through the queue, set and clear the A–B loop, change speed, mute, resize, repeat, shuffle and zoom, float, expand, picture‑in‑picture, rotate, move and resize floating windows, close players, and read or change the settings.
-  - **This phone only**, on `127.0.0.1:8792`. A web page can't reach it by pointing its own name at the phone.
+  - **This phone only**, on `127.0.0.1:8792` (8793 from 1.18). A web page can't reach it by pointing its own name at the phone.
   - **A key per caller, and a new key can do nothing.** Each of the 12 tools is its own switch, off until you tick it; changes apply at once, a key can be revoked at any time, and each keeps a list of its recent calls. Loopr stores only a fingerprint of a key, so it is shown once.
   - REST for scripts, **MCP** for agents, and one gate behind both. `GET /api/docs` with a key is the full reference.
   - When it can't do something it says why and what's left — floating needs "Display over other apps", three windows is the limit, B has to come after A — rather than failing silently. Granting Android permissions stays with you.

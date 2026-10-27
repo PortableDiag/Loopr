@@ -37,7 +37,7 @@ A modern, dark‑first **video player for Android** built around one thing most 
 ### Local API (off until you turn it on)
 Scripts and agents on the phone can drive Loopr: browse the library, open videos full screen or floating, play, pause, seek, skip, set the A–B loop, change speed, mute, resize, zoom, move and resize floating windows, and change settings — everything the app's own buttons do. **⋮ › Local API** switches it on and makes the keys.
 
-- **This phone only.** It listens on `127.0.0.1:8792` and refuses any request whose `Host` is not the phone's own (so a web page can't reach it by DNS rebinding). From a computer: `adb forward tcp:8792 tcp:8792`.
+- **This phone only.** It listens on `127.0.0.1:8793` and refuses any request whose `Host` is not the phone's own (so a web page can't reach it by DNS rebinding). From a computer: `adb forward tcp:8793 tcp:8793`.
 - **A key per caller, every tool off until you switch it on.** A new key can do nothing. You tick what it may do — each of the 12 tools is its own switch — and can change that or revoke the key at any time; a change applies to the next call. Loopr keeps only a fingerprint of a key, so it is shown once.
 - **Every key has a recent-calls list** and a count, and is capped at 240 calls a minute.
 - **One gate, three ways in:** REST for scripts, MCP (`POST /mcp`) for agents, and `POST /api/tools/{name}` for either. All three run the same tool through the same check. Tool names are `loopr.*` (MCP spells them `loopr_*`) so they stay unambiguous when PhoneAPI lists every app's tools together.
@@ -45,14 +45,14 @@ Scripts and agents on the phone can drive Loopr: browse the library, open videos
 
 ```bash
 KEY=lp_…                                                   # ⋮ › Local API › New key
-curl -s -H "X-API-Key: $KEY" 127.0.0.1:8792/api/docs        # the full reference
-curl -s -H "X-API-Key: $KEY" "127.0.0.1:8792/api/videos?q=cat"
-curl -s -H "X-API-Key: $KEY" -X POST 127.0.0.1:8792/api/open -d '{"video_id":42,"queue":"folder","window":"floating"}'
-curl -s -H "X-API-Key: $KEY" -X PUT 127.0.0.1:8792/api/players/1/ab -d '{"a_ms":5000,"b_ms":9000}'
-curl -s -H "X-API-Key: $KEY" -X PATCH 127.0.0.1:8792/api/players/1 -d '{"speed":0.5}'
+curl -s -H "X-API-Key: $KEY" 127.0.0.1:8793/api/docs        # the full reference
+curl -s -H "X-API-Key: $KEY" "127.0.0.1:8793/api/videos?q=cat"
+curl -s -H "X-API-Key: $KEY" -X POST 127.0.0.1:8793/api/open -d '{"video_id":42,"queue":"folder","window":"floating"}'
+curl -s -H "X-API-Key: $KEY" -X PUT 127.0.0.1:8793/api/players/1/ab -d '{"a_ms":5000,"b_ms":9000}'
+curl -s -H "X-API-Key: $KEY" -X PATCH 127.0.0.1:8793/api/players/1 -d '{"speed":0.5}'
 ```
 
-Port 8792 is clear of the other in‑house local APIs (Lull 8787, TextX 8788, DialX 8789, NotifX 8790, KJVBible 8794, ClipX 8795, ThereminX 8796, AppManager 8797, GhostUser 8799) and can be changed on the same screen.
+Port 8793 is clear of the other in‑house local APIs on the phone (Lull 8787, TextX 8788, DialX 8789, NotifX 8790, PermaFrost and Sift 8791, KJVBible 8794, ClipX 8795, ThereminX 8796, AppManager 8797, GhostUser and VolumePerApp 8799) and of TrellisBridge on 8792 on the computer, where `adb forward` needs the same number free. It can be changed on the same screen.
 
 Android 15 won't let an app start a foreground service from the background just because it holds "Display over other apps" — it also needs a window showing — so the API is switched on from its screen, and comes back by itself after a reboot if it was on.
 
