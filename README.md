@@ -54,6 +54,8 @@ curl -s -H "X-API-Key: $KEY" -X PATCH 127.0.0.1:8793/api/players/1 -d '{"speed":
 
 Port 8793 is clear of the other in‑house local APIs on the phone (Lull 8787, TextX 8788, DialX 8789, NotifX 8790, PermaFrost and Sift 8791, KJVBible 8794, ClipX 8795, ThereminX 8796, AppManager 8797, GhostUser and VolumePerApp 8799) and of TrellisBridge on 8792 on the computer, where `adb forward` needs the same number free. It can be changed on the same screen.
 
+**PhoneAPI** asks for its own key on Loopr's screen *Let PhoneAPI use Loopr?*: the same tool switches, every one off, and only PhoneAPI's release build is answered. Allow mints a key named PhoneAPI (replacing an older one) and a proof key, and switches the API on; while PhoneAPI holds it, every answer to a request carrying `X-PhoneAPI-Challenge` carries `X-PhoneAPI-Proof`, so PhoneAPI knows it is talking to Loopr. Revoking the PhoneAPI key, uninstalling PhoneAPI, or PhoneAPI no longer being signed by its release key unlinks it.
+
 Android 15 won't let an app start a foreground service from the background just because it holds "Display over other apps" — it also needs a window showing — so the API is switched on from its screen, and comes back by itself after a reboot if it was on.
 
 ---

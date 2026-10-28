@@ -76,6 +76,9 @@ class MainActivity : AppCompatActivity() {
         binding.recycler.setHasFixedSize(true)
 
         binding.grantButton.setOnClickListener { requestAccess() }
+
+        // PhoneAPI gone, or no longer signed by its release key: its key goes with it.
+        com.loopr.player.api.PhoneApiLink.dropIfUntrusted(this)
     }
 
     /**

@@ -106,7 +106,7 @@
     <string name="api_no_keys">No keys yet.</string>
     <string name="api_new_key">New key</string>
     <string name="api_key_name_hint">Who is it for?</string>
-    <string name="api_key_name_body">A name to recognise it by in the list.</string>
+    <string name="api_key_name_body">A name to recognize it by in the list.</string>
     <string name="api_create">Create</string>
     <string name="api_key_made">Your new key</string>
     <string name="api_key_made_body">%s\n\nThis is the only time it is shown. Loopr keeps only a fingerprint of it, so a lost key is revoked and replaced.\n\nNext: choose what it may do. Everything is off until you do.</string>
@@ -127,4 +127,11 @@
     <string name="api_notification_text">Listening on %1$s:%2$d, this phone only</string>
     <string name="api_stop">Stop</string>
     <string name="api_help">KEY=lp_…\ncurl -H \"X-API-Key: $KEY\" 127.0.0.1:%1$d/api/docs\n\nFrom a computer:\nadb forward tcp:%1$d tcp:%1$d\n\nAgents: MCP at http://127.0.0.1:%1$d/mcp</string>
+    <string name="phoneapi_title">Let PhoneAPI use Loopr?</string>
+    <string name="phoneapi_body">PhoneAPI gets its own key to Loopr\'s local API, with only the tools you switch on below. Which of its agents may use it is up to you in PhoneAPI. Revoke it any time under ⋮ › Local API.</string>
+    <string name="phoneapi_turns_on">This turns the local API on.</string>
+    <string name="phoneapi_replaces">It replaces the key PhoneAPI has now.</string>
+    <string name="phoneapi_may">What PhoneAPI may do</string>
+    <string name="phoneapi_allow">Allow</string>
+    <string name="phoneapi_deny">Don\'t allow</string>
 </resources>

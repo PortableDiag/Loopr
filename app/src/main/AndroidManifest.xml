@@ -17,6 +17,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Android 11+ hides other packages; the PhoneAPI handshake checks its signer. -->
+    <queries>
+        <package android:name="com.phoneapi.app" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -52,6 +57,28 @@
             android:name=".api.ApiActivity"
             android:exported="false"
             android:label="@string/api_title" />
+
+        <!-- PhoneAPI asks for a key (its provider contract §3). The activity checks the caller is
+             PhoneAPI's release build before it shows anything. -->
+        <activity
+            android:name=".api.PhoneApiGrantActivity"
+            android:exported="true"
+            android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="com.phoneapi.action.GRANT_KEY" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- PhoneAPI uninstalled: its key goes with it. -->
+        <receiver
+            android:name=".api.PhoneApiGoneReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_FULLY_REMOVED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".api.ApiService"

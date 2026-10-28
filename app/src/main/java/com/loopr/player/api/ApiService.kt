@@ -91,8 +91,9 @@ class ApiService : Service() {
         }
 
         if (server?.isRunning != true) {
+            PhoneApiLink.dropIfUntrusted(this)
             val api = LocalApi(keys, AndroidBackend(this), port)
-            server = ApiServer(api::handle, ApiKeys.BIND, port).also {
+            server = ApiServer(api::handle, ApiKeys.BIND, port, { PhoneApiLink.proofKey(this) }).also {
                 runCatching { it.start() }.onSuccess { running = true }.onFailure { e ->
                     Log.w(TAG, "could not listen on $port: ${e.message}")
                     keys.failed(

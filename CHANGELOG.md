@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.18.1 — 2026-10-27
+- **PhoneAPI can ask Loopr for a key.** Loopr answers only PhoneAPI's release build, and asks you first on its own screen, *Let PhoneAPI use Loopr?*, with the same tool switches every key has, all off. Allow makes a key named PhoneAPI (a second Allow replaces it) and switches the local API on.
+- **Loopr proves it is Loopr.** Another app could listen on 8793 while Loopr's API is off, so once PhoneAPI is linked every answer to it (health and errors included) carries a proof only Loopr can make.
+- **PhoneAPI's key goes when PhoneAPI does:** on uninstall, when PhoneAPI is no longer signed by its release key, or when you revoke the key under ⋮ › Local API.
+
 ## 1.18 — 2026-10-27
 - **The local API moved to port 8793.** 8792 was free on the phone but not on the computer, where TrellisBridge already listens on it — so `adb forward tcp:8792 tcp:8792` failed there. 8793 is free on both and in every other in‑house app. If you already changed the port yourself, yours is kept.
 

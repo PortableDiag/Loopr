@@ -28,7 +28,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ApiServer(
     private val handle: (ApiRequest) -> ApiResponse,
     private val bindAddress: String,
-    private val port: Int
+    private val port: Int,
+    /** PhoneAPI's proof key while it is linked ([PhoneApiLink]); every answer to its challenge carries the proof. */
+    private val proofKey: () -> ByteArray? = { null }
 ) {
 
     companion object {
@@ -102,8 +104,9 @@ class ApiServer(
             val input = BufferedInputStream(socket.getInputStream())
             val output = BufferedOutputStream(socket.getOutputStream())
 
+            var request: ApiRequest? = null
             val response = try {
-                val request = Http.parse(input) ?: return
+                request = Http.parse(input) ?: return
                 handle(request)
             } catch (e: ApiException) {
                 ApiResponse.error(e.status, e.message ?: "bad request", e.hint)
@@ -116,12 +119,16 @@ class ApiServer(
                 ApiResponse.error(500, "${e.javaClass.simpleName}: ${e.message}")
             }
 
-            runCatching { write(output, response) }
+            // Provider contract §2: health, 401s, 404s and errors carry the proof too.
+            val proof = request?.let { r ->
+                runCatching { PhoneApiProof.header(proofKey(), r.header(PhoneApiProof.HEADER_CHALLENGE)) }.getOrNull()
+            }
+            runCatching { write(output, response, proof) }
                 .onFailure { Log.w(TAG, "response failed", it) }
         }
     }
 
-    private fun write(output: OutputStream, response: ApiResponse) {
+    private fun write(output: OutputStream, response: ApiResponse, proof: Pair<String, String>?) {
         val length = if (response.stream != null) response.streamLength else response.body.size.toLong()
         val head = StringBuilder()
             .append("HTTP/1.1 ${response.status} ${response.reason}\r\n")
@@ -133,6 +140,7 @@ class ApiServer(
             // No CORS headers at all: a web page in this phone's browser has no business driving the player.
             .apply {
                 for ((name, value) in response.extraHeaders) append("$name: $value\r\n")
+                if (proof != null) append("${proof.first}: ${proof.second}\r\n")
             }
             .append("\r\n")
             .toString()
