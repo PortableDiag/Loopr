@@ -116,14 +116,14 @@ class ApiService : Service() {
 }
 
 /**
- * Puts the API back after a reboot, but only if it was switched on: an agent given a key and a
+ * Puts the API back after a reboot or an update, but only if it was switched on: an agent given a key and a
  * port has every reason to expect both to still work tomorrow. Does nothing while the API is off,
  * which is how it ships.
  */
 @UnstableApi
 class ApiBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         ApiService.sync(context)
     }
 }

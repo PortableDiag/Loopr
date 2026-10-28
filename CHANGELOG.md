@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.18.3 — 2026-10-27
+- **The local API comes back by itself after an update**, as it does after a reboot, if it was on. Until now it stayed off until Loopr was opened, so PhoneAPI lost it at every update.
+
 ## 1.18.2 — 2026-10-27
 - **PhoneAPI's key screen:** an *Allow all* switch above the tool switches, the list headed *It may:*, and when PhoneAPI already has a key each switch starts at what that key allows now.
 
