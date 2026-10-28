@@ -50,19 +50,33 @@ class PhoneApiGrantActivity : AppCompatActivity() {
             if (PhoneApiLink.linked(this@PhoneApiGrantActivity)) append(' ').append(getString(R.string.phoneapi_replaces))
         }
 
-        // Loopr's own key switches, one per tool, every one off.
-        val switches = Tools.all.map { tool ->
-            MaterialSwitch(this).apply {
-                text = tool.label
-                isChecked = false
-                minHeight = (48 * resources.displayMetrics.density).toInt()
-                setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodyLarge)
-                binding.tools.addView(this)
-            } to tool.name
+        // Loopr's own key switches, one per tool: off, or what PhoneAPI's current key has.
+        val current = PhoneApiLink.keyId(this)?.let { id -> keys.keys().firstOrNull { it.id == id }?.tools }.orEmpty()
+        fun row(label: String, on: Boolean) = MaterialSwitch(this).apply {
+            text = label
+            isChecked = on
+            minHeight = (48 * resources.displayMetrics.density).toInt()
+            setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodyLarge)
+            binding.tools.addView(this)
         }
+        val all = row(getString(R.string.phoneapi_allow_all), false)
+        val switches = Tools.all.map { tool -> row(tool.label, tool.name in current) to tool.name }
+        var syncing = false
         // A key that may do nothing is not worth minting.
-        val sync = { binding.allow.isEnabled = switches.any { it.first.isChecked } }
-        switches.forEach { (s, _) -> s.setOnCheckedChangeListener { _, _ -> sync() } }
+        val sync = {
+            syncing = true
+            all.isChecked = switches.all { it.first.isChecked }
+            syncing = false
+            binding.allow.isEnabled = switches.any { it.first.isChecked }
+        }
+        all.setOnCheckedChangeListener { _, on ->
+            if (syncing) return@setOnCheckedChangeListener
+            syncing = true
+            switches.forEach { it.first.isChecked = on }
+            syncing = false
+            sync()
+        }
+        switches.forEach { (s, _) -> s.setOnCheckedChangeListener { _, _ -> if (!syncing) sync() } }
         sync()
 
         binding.deny.setOnClickListener {

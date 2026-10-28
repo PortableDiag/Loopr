@@ -131,7 +131,8 @@
     <string name="phoneapi_body">PhoneAPI gets its own key to Loopr\'s local API, with only the tools you switch on below. Which of its agents may use it is up to you in PhoneAPI. Revoke it any time under ⋮ › Local API.</string>
     <string name="phoneapi_turns_on">This turns the local API on.</string>
     <string name="phoneapi_replaces">It replaces the key PhoneAPI has now.</string>
-    <string name="phoneapi_may">What PhoneAPI may do</string>
+    <string name="phoneapi_may">It may:</string>
+    <string name="phoneapi_allow_all">Allow all</string>
     <string name="phoneapi_allow">Allow</string>
     <string name="phoneapi_deny">Don\'t allow</string>
 </resources>
