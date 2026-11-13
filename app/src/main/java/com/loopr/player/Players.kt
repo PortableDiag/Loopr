@@ -34,6 +34,9 @@ interface ControllablePlayer {
     fun clearAbPoints()
 
     fun closePlayer()
+
+    /** `video` is the picture alone, `window` the player as drawn. Gathered here, captured off the main thread. */
+    fun screenshotTarget(what: String): Screenshot.Target
 }
 
 /** What a player is doing, read once on the main thread. */

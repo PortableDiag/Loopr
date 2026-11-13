@@ -34,11 +34,19 @@ A modern, dark‑first **video player for Android** built around one thing most 
 - Runtime media permission flow.
 - **Material 3** UI with **light / dark / follow‑system** themes — **defaults to dark**.
 
+### 3D models (VRM, GLB, glTF)
+**⋮ › 3D models** opens VRM avatars (0.x and 1.0), GLB and glTF files in a full-screen viewer drawn by Google's Filament renderer — the rest pose with the model's own textures, alpha and materials (unlit/MToon fallback and PBR). Not drawn, as on Loopr Desktop: animation, spring bones, expressions, outlines.
+- **Drag** turns it, **pinch** zooms, **two fingers** pan, **double tap** resets, a **tap** hides the controls. Front / Back / Side / Top, **Spin**, a **☀ Light** slider (lights the model, not the backdrop) and a Dark / Grey / Light background.
+- **⏮ / ⏭ step through the folder**, in natural name order, like videos.
+- Android's media permission doesn't reach model files, so Loopr sees them in three places: **its own folder** (`Android/data/com.loopr.player/files/Models` — `adb push` there, no permission needed), **folders you add** (*Add a folder*, Android's own picker; kept across restarts; searched four levels deep), and **files you open** (*Open a file*). A file manager can also open a `.vrm` / `.glb` / `.gltf` straight into the viewer.
+- The grid shows each VRM's **own embedded thumbnail**.
+- A `.gltf` with separate `.bin` / texture files needs them beside it in Loopr's folder or an added folder; a `.glb` or `.vrm` carries everything.
+
 ### Local API (off until you turn it on)
-Scripts and agents on the phone can drive Loopr: browse the library, open videos full screen or floating, play, pause, seek, skip, set the A–B loop, change speed, mute, resize, zoom, move and resize floating windows, and change settings — everything the app's own buttons do. **⋮ › Local API** switches it on and makes the keys.
+Scripts and agents on the phone can drive Loopr: browse the library, open videos full screen or floating, play, pause, seek, skip, set the A–B loop, change speed, mute, resize, zoom, move and resize floating windows, open and turn 3D models, **see what is on screen** (`loopr.screenshot`), and change settings — everything the app's own buttons do. The 14 tool names and the `loopr.model` actions match Loopr Desktop's, so one agent prompt drives both. **⋮ › Local API** switches it on and makes the keys.
 
 - **This phone only.** It listens on `127.0.0.1:8793` and refuses any request whose `Host` is not the phone's own (so a web page can't reach it by DNS rebinding). From a computer: `adb forward tcp:8793 tcp:8793`.
-- **A key per caller, every tool off until you switch it on.** A new key can do nothing. You tick what it may do — each of the 12 tools is its own switch — and can change that or revoke the key at any time; a change applies to the next call. Loopr keeps only a fingerprint of a key, so it is shown once.
+- **A key per caller, every tool off until you switch it on.** A new key can do nothing. You tick what it may do — each of the 14 tools is its own switch — and can change that or revoke the key at any time; a change applies to the next call. Loopr keeps only a fingerprint of a key, so it is shown once.
 - **Every key has a recent-calls list** and a count, and is capped at 240 calls a minute.
 - **One gate, three ways in:** REST for scripts, MCP (`POST /mcp`) for agents, and `POST /api/tools/{name}` for either. All three run the same tool through the same check. Tool names are `loopr.*` (MCP spells them `loopr_*`) so they stay unambiguous when PhoneAPI lists every app's tools together.
 - **A refusal says why and what's left** — e.g. floating needs Android's "Display over other apps", three windows is the most at once, B has to come after A. Only you can grant Android permissions; `GET /api/settings` says which Loopr holds.
@@ -50,7 +58,16 @@ curl -s -H "X-API-Key: $KEY" "127.0.0.1:8793/api/videos?q=cat"
 curl -s -H "X-API-Key: $KEY" -X POST 127.0.0.1:8793/api/open -d '{"video_id":42,"queue":"folder","window":"floating"}'
 curl -s -H "X-API-Key: $KEY" -X PUT 127.0.0.1:8793/api/players/1/ab -d '{"a_ms":5000,"b_ms":9000}'
 curl -s -H "X-API-Key: $KEY" -X PATCH 127.0.0.1:8793/api/players/1 -d '{"speed":0.5}'
+curl -s -H "X-API-Key: $KEY" "127.0.0.1:8793/api/players/1/screenshot?what=window" -o shot.jpg
+# A VRM avatar: open with its folder as the queue, three-quarter view, slow spin
+curl -s -H "X-API-Key: $KEY" -X POST 127.0.0.1:8793/api/open -d '{"path":"/sdcard/Android/data/com.loopr.player/files/Models/me.vrm"}'
+curl -s -H "X-API-Key: $KEY" -X POST 127.0.0.1:8793/api/models/2 -d '{"action":"rotate_to","yaw":35,"pitch":10}'
+curl -s -H "X-API-Key: $KEY" -X POST 127.0.0.1:8793/api/models/2 -d '{"action":"spin","speed":20}'
 ```
+
+- **Models:** `GET /api/videos?kind=model` lists them (each library entry has a `kind`); `loopr.open` with a model's id or path opens the model view; `GET /api/models/{id}` reports its format, title, authors, licence, triangles, size in metres, camera, spin, light and background, with `loading` true until it is drawn. `loopr.model` actions: `rotate_to` / `rotate_by` (yaw 0 is the front, pitch + looks from above), `zoom` (1 frames it, 0.05–20), `pan` (model radii), `view`, `reset`, `spin`, `light` (0–3), `background`, `next` / `previous` / `jump`. A model view shares the players' ids; a video verb on it is a 400 that names `loopr.model`.
+- **Screenshots:** `video` is the picture alone, `window` the screen as drawn, controls and all; only while it is on screen. Over MCP the result is an image block, so an agent sees it directly.
+- **Differences from Loopr Desktop:** models open full screen only (no floating model windows); there is no frame step, volume level or brightness, because the phone app has none — the API does what the app does.
 
 Port 8793 is clear of the other in‑house local APIs on the phone (Lull 8787, TextX 8788, DialX 8789, NotifX 8790, PermaFrost and Sift 8791, KJVBible 8794, ClipX 8795, ThereminX 8796, AppManager 8797, GhostUser and VolumePerApp 8799) and of TrellisBridge on 8792 on the computer, where `adb forward` needs the same number free. It can be changed on the same screen.
 
@@ -162,9 +179,18 @@ app/src/main/
 │   ├── ThemeManager.kt      # light/dark/system theme persistence
 │   ├── VideoLibrary.kt      # the MediaStore query the grid and the API share
 │   ├── Players.kt           # every open player, numbered, and what the API may ask of one
+│   ├── Screenshot.kt        # loopr.screenshot: PixelCopy of a SurfaceView / window, or an overlay drawn by hand
+│   ├── ModelsActivity.kt    # ⋮ › 3D models: the model grid, add a folder, open a file
+│   ├── ModelViewerActivity.kt # one model full screen: gestures, controls, folder queue
+│   ├── model/
+│   │   ├── ModelMeta.kt     # what a VRM/GLB/glTF says about itself (pure Kotlin, JVM-tested)
+│   │   ├── ModelCamera.kt   # the orbit camera in Loopr Desktop's units (JVM-tested)
+│   │   ├── ModelScene.kt    # Filament: engine, lights, async texture load, render on change
+│   │   ├── ModelLibrary.kt  # Loopr's folder, granted folders and files; thumbnails; natural order
+│   │   └── Models.kt        # the open model views, for the API
 │   └── api/                 # the local API — off unless you switch it on
 │       ├── LocalApi.kt      # routes, auth, tool gates, rate cap, MCP, /api/docs (no Android types)
-│       ├── Tools.kt         # the 12 tools, each its own switch
+│       ├── Tools.kt         # the 14 tools, each its own switch
 │       ├── AndroidBackend.kt # what each tool does on the phone
 │       ├── ApiKey.kt · ApiKeys.kt # keys as hashes, with their tools and recent calls
 │       ├── ApiService.kt    # the foreground service that keeps it listening; boot receiver

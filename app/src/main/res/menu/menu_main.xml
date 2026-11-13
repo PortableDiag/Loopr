@@ -12,6 +12,10 @@
         android:title="@string/theme"
         app:showAsAction="ifRoom" />
     <item
+        android:id="@+id/action_models"
+        android:title="@string/models_title"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/action_multi"
         android:title="@string/multiple_players"
         android:checkable="true"

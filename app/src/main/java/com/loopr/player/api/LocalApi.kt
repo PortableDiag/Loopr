@@ -15,6 +15,10 @@ interface LooprBackend {
 
     /** A library video's thumbnail as JPEG bytes, for the REST route that serves it as an image. */
     fun thumbnailJpeg(videoId: Long): ByteArray
+
+    /** What `loopr.screenshot` with [args] sees, as JPEG bytes, for the REST route that serves it as an image. */
+    fun screenshotJpeg(args: JSONObject): ByteArray =
+        throw ToolError(ToolError.NOT_FOUND, "Screenshots are not available here")
 }
 
 /**
@@ -74,7 +78,7 @@ class LocalApi(
             m == "POST" && p.size == 3 && p[1] == "tools" -> rest(key, p[2], req.json())
 
             m == "GET" && req.path == "/api/videos" -> rest(key, "loopr.library", JSONObject()
-                .putOpt("q", req.query["q"]).putOpt("folder", req.query["folder"])
+                .putOpt("q", req.query["q"]).putOpt("folder", req.query["folder"]).putOpt("kind", req.query["kind"])
                 .put("limit", req.queryInt("limit", 50)).put("offset", req.queryInt("offset", 0)))
             m == "GET" && req.path == "/api/folders" -> rest(key, "loopr.folders", JSONObject())
             m == "GET" && p.size == 4 && p[1] == "videos" && p[3] == "thumbnail" -> thumbnail(key, p[2])
@@ -83,6 +87,7 @@ class LocalApi(
             m == "PATCH" && req.path == "/api/settings" -> rest(key, "loopr.change_settings", req.json())
 
             p.getOrNull(1) == "players" -> players(key, req, p)
+            p.getOrNull(1) == "models" -> models(key, req, p)
             else -> notFound()
         }
     }
@@ -103,6 +108,7 @@ class LocalApi(
             p.size == 3 && m == "GET" -> rest(key, "loopr.players", JSONObject(), onlyPlayer = id)
             p.size == 3 && m == "PATCH" -> rest(key, "loopr.options", body)
             p.size == 3 && m == "DELETE" -> rest(key, "loopr.window", body.put("action", "close"))
+            p.size == 4 && action == "screenshot" && m == "GET" -> screenshot(key, id, req)
             p.size == 4 && action == "queue" && m == "GET" -> rest(key, "loopr.queue", body
                 .put("offset", req.queryInt("offset", 0)).put("limit", req.queryInt("limit", 100)))
             p.size == 4 && action == "ab" && m == "PUT" -> rest(key, "loopr.ab_loop", body.put("action", "set"))
@@ -115,6 +121,32 @@ class LocalApi(
             else -> notFound()
         }
     }
+
+    /** `/api/models…`: the 3D model views, Loopr Desktop's routes. */
+    private fun models(key: ApiKey, req: ApiRequest, p: List<String>): ApiResponse {
+        val m = req.method
+        if (p.size == 2) return when (m) {
+            "GET" -> rest(key, "loopr.players", JSONObject(), onlyModels = true)
+            else -> ApiResponse.error(405, "GET lists the model views")
+        }
+        val id = p[2].toIntOrNull() ?: return ApiResponse.error(400, "A model view's id is a number", "GET /api/models")
+        val body = if (m == "GET" || m == "DELETE") JSONObject() else req.json()
+        body.put("player_id", id)
+        val action = p.getOrNull(3)
+        return when {
+            p.size == 3 && m == "GET" -> rest(key, "loopr.players", JSONObject(), onlyPlayer = id)
+            p.size == 3 && m == "POST" -> rest(key, "loopr.model", body)
+            p.size == 3 && m == "DELETE" -> rest(key, "loopr.window", body.put("action", "close"))
+            p.size == 4 && action == "close" && m == "POST" -> rest(key, "loopr.window", body.put("action", "close"))
+            p.size == 4 && action == "queue" && m == "GET" -> rest(key, "loopr.queue", body
+                .put("offset", req.queryInt("offset", 0)).put("limit", req.queryInt("limit", 100)))
+            p.size == 4 && action == "screenshot" && m == "GET" -> screenshot(key, id, req)
+            p.size == 4 && m == "POST" && action in MODEL_ACTIONS -> rest(key, "loopr.model", body.put("action", action))
+            else -> notFound()
+        }
+    }
+
+    private val MODEL_ACTIONS = setOf("rotate_to", "rotate_by", "zoom", "pan", "view", "reset", "spin", "light", "background", "next", "previous", "jump")
 
     private val PLAYBACK = setOf("play", "pause", "toggle", "next", "previous", "jump")
     private val WINDOW = setOf("float", "expand", "pip", "rotate", "move", "resize", "close")
@@ -164,17 +196,20 @@ class LocalApi(
         true
     }
 
-    private fun rest(key: ApiKey, name: String, args: JSONObject, onlyPlayer: Int? = null): ApiResponse {
+    private fun rest(key: ApiKey, name: String, args: JSONObject, onlyPlayer: Int? = null, onlyModels: Boolean = false): ApiResponse {
         val r = run(key, name, args)
         if (!r.optBoolean("ok")) return toolFailure(r)
         val result = r.get("result")
+        if (onlyModels && result is JSONObject) return ApiResponse.json(JSONObject().put("models", result.optJSONArray("models") ?: JSONArray()))
         if (onlyPlayer != null && result is JSONObject) {
-            val list = result.optJSONArray("players") ?: JSONArray()
-            for (i in 0 until list.length()) {
-                val one = list.getJSONObject(i)
-                if (one.optInt("id") == onlyPlayer) return ApiResponse.json(one)
+            for (list in listOf(result.optJSONArray("players"), result.optJSONArray("models"))) {
+                if (list == null) continue
+                for (i in 0 until list.length()) {
+                    val one = list.getJSONObject(i)
+                    if (one.optInt("id") == onlyPlayer) return ApiResponse.json(one)
+                }
             }
-            return ApiResponse.error(404, "No player $onlyPlayer is open", "GET /api/players")
+            return ApiResponse.error(404, "No player or model view $onlyPlayer is open", "GET /api/players")
         }
         return when (result) {
             is JSONArray -> ApiResponse.json(result)
@@ -207,6 +242,14 @@ class LocalApi(
         return ApiResponse(200, "image/jpeg", jpeg)
     }
 
+    private fun screenshot(key: ApiKey, id: Int, req: ApiRequest): ApiResponse {
+        val args = JSONObject().put("player_id", id).putOpt("what", req.query["what"])
+        var jpeg = ByteArray(0)
+        val r = run(key, "loopr.screenshot", args) { _, a -> jpeg = backend.screenshotJpeg(a); JSONObject() }
+        if (!r.optBoolean("ok")) return toolFailure(r)
+        return ApiResponse(200, "image/jpeg", jpeg)
+    }
+
     private fun notFound() = ApiResponse.error(404, "No such route", "GET /api/docs lists them")
 
     // ---------------- MCP: streamable HTTP, JSON responses, stateless ----------------
@@ -233,9 +276,17 @@ class LocalApi(
                 val name = params.optString("name").ifEmpty { return ApiResponse.json(rpcError(id, -32602, "name is required")) }
                 val r = run(key, name, params.optJSONObject("arguments") ?: JSONObject())
                 val ok = r.optBoolean("ok")
-                JSONObject()
-                    .put("content", JSONArray().put(JSONObject().put("type", "text").put("text", (if (ok) r.get("result") else r.get("error")).toString())))
-                    .put("isError", !ok)
+                val out = if (ok) r.get("result") else r.get("error")
+                val content = JSONArray()
+                // A picture goes to the agent as a picture: an image block, and the rest as text.
+                if (ok && out is JSONObject && out.optString("mime").startsWith("image/") && out.has("data_b64")) {
+                    content.put(JSONObject().put("type", "image").put("data", out.getString("data_b64")).put("mimeType", out.getString("mime")))
+                    val rest = JSONObject(out.toString()).apply { remove("data_b64") }
+                    content.put(JSONObject().put("type", "text").put("text", rest.toString()))
+                } else {
+                    content.put(JSONObject().put("type", "text").put("text", out.toString()))
+                }
+                JSONObject().put("content", content).put("isError", !ok)
             }
             else -> return ApiResponse.json(rpcError(id, -32601, "Method not found"))
         }
@@ -259,7 +310,14 @@ class LocalApi(
         "POST /api/players/{id}/set_a", "POST /api/players/{id}/set_b",
         "POST /api/players/{id}/float", "POST /api/players/{id}/expand", "POST /api/players/{id}/pip",
         "POST /api/players/{id}/rotate", "POST /api/players/{id}/move", "POST /api/players/{id}/resize",
-        "POST /api/players/{id}/close", "GET /api/settings", "PATCH /api/settings", "POST /mcp"
+        "POST /api/players/{id}/close", "GET /api/players/{id}/screenshot",
+        "GET /api/models", "GET /api/models/{id}", "POST /api/models/{id}", "DELETE /api/models/{id}",
+        "GET /api/models/{id}/queue", "GET /api/models/{id}/screenshot", "POST /api/models/{id}/close",
+        "POST /api/models/{id}/rotate_to", "POST /api/models/{id}/rotate_by", "POST /api/models/{id}/zoom",
+        "POST /api/models/{id}/pan", "POST /api/models/{id}/view", "POST /api/models/{id}/reset",
+        "POST /api/models/{id}/spin", "POST /api/models/{id}/light", "POST /api/models/{id}/background",
+        "POST /api/models/{id}/next", "POST /api/models/{id}/previous", "POST /api/models/{id}/jump",
+        "GET /api/settings", "PATCH /api/settings", "POST /mcp"
     )
 
     private fun docs(key: ApiKey): String = buildString {
@@ -279,10 +337,11 @@ class LocalApi(
         appendLine("| | |")
         appendLine("|---|---|")
         appendLine("| `GET /api/me` · `GET /api/tools` | this key and its tools; every tool, its schema, whether this key may use it |")
-        appendLine("| `GET /api/videos?q=&folder=&limit=50&offset=0` | the library, newest first |")
-        appendLine("| `GET /api/folders` | folders holding videos |")
-        appendLine("| `GET /api/videos/{id}/thumbnail` | the thumbnail, as image/jpeg |")
+        appendLine("| `GET /api/videos?q=&folder=&kind=all\\|video\\|model&limit=50&offset=0` | the library: videos newest first, then 3D models; each has a `kind` |")
+        appendLine("| `GET /api/folders` | folders holding videos or models |")
+        appendLine("| `GET /api/videos/{id}/thumbnail` | the thumbnail (a VRM's own, for a model), as image/jpeg |")
         appendLine("| `POST /api/open` `{\"video_id\":42,\"queue\":\"folder\",\"window\":\"floating\",\"position_ms\":0,\"paused\":false}` | open a video; answers the new player |")
+        appendLine("| `POST /api/open` `{\"path\":\"/sdcard/Android/data/com.loopr.player/files/Models/me.vrm\",\"queue\":\"single\"}` | open a 3D model (.vrm .glb .gltf) in the model view; answers it |")
         appendLine("| `GET /api/players` · `GET /api/players/{id}` | open players and their state |")
         appendLine("| `GET /api/players/{id}/queue?offset=0&limit=100` | a player's queue |")
         appendLine("| `POST /api/players/{id}/play` · `pause` · `toggle` · `next` · `previous` | the transport buttons |")
@@ -293,6 +352,10 @@ class LocalApi(
         appendLine("| `POST /api/players/{id}/float` · `expand` · `pip` · `rotate` · `close` | where the video is shown |")
         appendLine("| `POST /api/players/{id}/move` `{\"x\":0,\"y\":200}` · `…/resize` `{\"width\":600}` | a floating window's place and size |")
         appendLine("| `DELETE /api/players/{id}` · `DELETE /api/players` | close one player · every player |")
+        appendLine("| `GET /api/players/{id}/screenshot?what=video\\|window` | what it shows, as image/jpeg |")
+        appendLine("| `GET /api/models` · `GET /api/models/{id}` · `GET …/queue` · `GET …/screenshot?what=` | 3D model views |")
+        appendLine("| `POST /api/models/{id}` `{\"action\":\"rotate_to\",\"yaw\":35,\"pitch\":10}` (or `POST /api/models/{id}/{action}`) | `loopr.model`: rotate_to, rotate_by, zoom, pan, view, reset, spin, light, background, next, previous, jump |")
+        appendLine("| `DELETE /api/models/{id}` · `POST …/close` | close a model view |")
         appendLine("| `GET /api/settings` · `PATCH /api/settings` `{\"theme\":\"dark\",\"multiple_players\":true,\"floating_windows\":true}` | settings and permissions |")
         appendLine("| `POST /api/tools/{name}` | any tool, arguments as the body; answers `{ok, result}` or `{ok:false, error:{code, message}}` |")
         appendLine()
@@ -302,6 +365,9 @@ class LocalApi(
         appendLine()
         appendLine("## Tools")
         Tools.all.forEach { appendLine("- `${it.name}`${if (it.name in key.tools) "" else " (off for this key)"}: ${it.description}") }
+        appendLine()
+        appendLine("## 3D models")
+        appendLine("VRM 0.x and 1.0, GLB and glTF, drawn in their rest pose with their own textures and materials (no animation, spring bones, expressions or outlines). Loopr sees models in its own folder (`Android/data/com.loopr.player/files/Models`: `adb push` them there), in folders the owner adds under ⋮ › 3D models, and files a file manager opens. A model view shares the players' id numbers; video verbs on it are a 400 pointing at `loopr.model`. After `loopr.open` a model loads in the background: `loading` is true until it is drawn.")
         appendLine()
         appendLine("## What only a person can do")
         appendLine("Android's own permission screens: letting Loopr see videos, \"Display over other apps\" and notifications. `GET /api/settings` says which are granted.")

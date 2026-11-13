@@ -17,9 +17,12 @@ android {
         applicationId "com.loopr.player"
         minSdk 26
         targetSdk 35
-        versionCode 22
-        versionName "1.18.3"
+        versionCode 23
+        versionName "1.19"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Filament is the only native code. 64-bit ARM is every phone Loopr runs on, x86_64 the
+        // emulator; without these two each 3D model says so instead of crashing.
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
     }
 
     signingConfigs {
@@ -67,6 +70,11 @@ dependencies {
     implementation 'androidx.media3:media3-exoplayer:1.4.1'
     implementation 'androidx.media3:media3-ui:1.4.1'
     implementation 'androidx.media3:media3-common:1.4.1'
+
+    // 3D models (VRM, glTF, GLB): Google's Filament renderer and its glTF loader. Native code,
+    // shipped only for the two ABIs Loopr is run on (see ndk.abiFilters).
+    implementation 'com.google.android.filament:filament-android:1.56.0'
+    implementation 'com.google.android.filament:gltfio-android:1.56.0'
 
     // Coroutines for async thumbnail loading
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'

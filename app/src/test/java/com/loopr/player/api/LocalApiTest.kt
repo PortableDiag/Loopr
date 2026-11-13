@@ -33,6 +33,11 @@ class LocalApiTest {
             return JSONObject().put("tool", tool).put("players", JSONArray().put(JSONObject().put("id", 7)))
         }
         override fun thumbnailJpeg(videoId: Long) = byteArrayOf(1, 2, 3)
+        override fun screenshotJpeg(args: JSONObject): ByteArray {
+            calls += "screenshot" to args
+            fail?.let { throw it }
+            return byteArrayOf(9, 8, 7)
+        }
     }
 
     private val raw = KeyHash.newKey()
@@ -245,10 +250,91 @@ class LocalApiTest {
                 else -> "{}"
             }
             val status = api.handle(req(m, concrete, body)).status
-            assertTrue("$route answered $status", status == 200 || (route == "GET /api/players/{id}" && status == 404))
+            assertTrue("$route answered $status", status == 200 || (route in setOf("GET /api/players/{id}", "GET /api/models/{id}") && status == 404))
         }
         val docs = String(api.handle(req("GET", "/api/docs")).body)
         for (t in Tools.all) assertTrue("docs miss ${t.name}", docs.contains(t.name))
+    }
+
+    @Test
+    fun `model routes are loopr model with the id and action filled in`() {
+        val (api, backend) = setup()
+        assertEquals(200, api.handle(req("POST", "/api/models/5", """{"action":"rotate_to","yaw":35}""")).status)
+        assertEquals("loopr.model", backend.calls.last().first)
+        assertEquals(5, backend.calls.last().second.getInt("player_id"))
+        assertEquals(35, backend.calls.last().second.getInt("yaw"))
+        assertEquals(200, api.handle(req("POST", "/api/models/5/spin", """{"speed":20}""")).status)
+        assertEquals("spin", backend.calls.last().second.getString("action"))
+        assertEquals(200, api.handle(req("DELETE", "/api/models/5")).status)
+        assertEquals("loopr.window", backend.calls.last().first)
+        assertEquals("close", backend.calls.last().second.getString("action"))
+        assertEquals(404, api.handle(req("POST", "/api/models/5/explode")).status)
+    }
+
+    @Test
+    fun `GET models lists only the model views`() {
+        val (api) = setup()
+        val r = json(api.handle(req("GET", "/api/models")))
+        assertTrue(r.has("models"))
+        assertFalse(r.has("players"))
+    }
+
+    @Test
+    fun `the library route passes kind through`() {
+        val (api, backend) = setup()
+        api.handle(req("GET", "/api/videos?kind=model"))
+        assertEquals("model", backend.calls.last().second.getString("kind"))
+    }
+
+    @Test
+    fun `a screenshot is served as a JPEG and asks for what was named`() {
+        val (api, backend) = setup()
+        val r = api.handle(req("GET", "/api/players/3/screenshot?what=window"))
+        assertEquals(200, r.status)
+        assertEquals("image/jpeg", r.contentType)
+        assertEquals(3, r.body.size)
+        assertEquals("window", backend.calls.last().second.getString("what"))
+        assertEquals(3, backend.calls.last().second.getInt("player_id"))
+    }
+
+    @Test
+    fun `a screenshot obeys the key's switch`() {
+        val (api, backend) = setup(allTools - "loopr.screenshot")
+        assertEquals(403, api.handle(req("GET", "/api/models/3/screenshot")).status)
+        assertTrue(backend.calls.isEmpty())
+    }
+
+    @Test
+    fun `a refused screenshot keeps its status`() {
+        val (api, backend) = setup()
+        backend.fail = ToolError(ToolError.REFUSED, "not on screen")
+        assertEquals(409, api.handle(req("GET", "/api/players/3/screenshot")).status)
+    }
+
+    @Test
+    fun `MCP hands a picture back as an image block`() {
+        val keys = FakeKeys(listOf(ApiKey(1, "script", KeyHash.hash(raw), raw.takeLast(4), allTools)))
+        val pic = object : LooprBackend {
+            override val version = "t"
+            override fun run(tool: String, args: JSONObject): Any =
+                JSONObject().put("mime", "image/jpeg").put("what", "video").put("data_b64", "AAEC")
+            override fun thumbnailJpeg(videoId: Long) = ByteArray(0)
+        }
+        val api = LocalApi(keys, pic, 8793) { now }
+        val r = json(api.handle(req("POST", "/mcp",
+            """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"loopr_screenshot","arguments":{}}}""")))
+        val content = r.getJSONObject("result").getJSONArray("content")
+        assertEquals("image", content.getJSONObject(0).getString("type"))
+        assertEquals("AAEC", content.getJSONObject(0).getString("data"))
+        assertEquals("image/jpeg", content.getJSONObject(0).getString("mimeType"))
+        assertFalse(content.getJSONObject(1).getString("text").contains("AAEC"))
+    }
+
+    @Test
+    fun `fourteen tools, named as Loopr Desktop names them`() {
+        assertEquals(14, Tools.all.size)
+        assertTrue(Tools.find("loopr_model") != null)
+        assertTrue(Tools.find("loopr.screenshot") != null)
     }
 
     @Test

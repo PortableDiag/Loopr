@@ -140,6 +140,7 @@ class MainActivity : AppCompatActivity() {
         R.id.action_multi -> { toggleMultiInstance(item); true }
         R.id.action_floating -> { toggleFloating(item); true }
         R.id.action_api -> { startActivity(Intent(this, ApiActivity::class.java)); true }
+        R.id.action_models -> { startActivity(Intent(this, ModelsActivity::class.java)); true }
         else -> false
     }
 

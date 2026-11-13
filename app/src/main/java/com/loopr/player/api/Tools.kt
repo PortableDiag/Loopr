@@ -28,45 +28,49 @@ object Tools {
     private const val PLAYER_ID =
         """"player_id":{"type":"integer","description":"From loopr.players. May be left out while exactly one player is open."}"""
 
+    private const val MODEL_ID =
+        """"player_id":{"type":"integer","description":"A 3D model view's id, from loopr.players (models). May be left out while exactly one is open."}"""
+
     val all: List<Tool> = listOf(
         Tool(
-            "loopr.library", "See the video library",
-            "List or search the videos on the phone, newest first, as the library grid shows them.",
+            "loopr.library", "See the video and 3D model library",
+            "List or search the videos on the phone (newest first, as the library grid shows them) and the 3D models Loopr can see (VRM, GLB, glTF; after the videos). Each entry has a kind.",
             """{"type":"object","properties":{
                 "q":{"type":"string","description":"Words that must appear in the file name."},
-                "folder":{"type":"string","description":"Only this folder (a name from loopr.folders)."},
+                "folder":{"type":"string","description":"Only this folder (a name or id from loopr.folders)."},
+                "kind":{"type":"string","enum":["all","video","model"],"default":"all"},
                 "limit":{"type":"integer","minimum":1,"maximum":500,"default":50},
                 "offset":{"type":"integer","minimum":0,"default":0}}}"""
         ),
         Tool(
             "loopr.folders", "See the folders",
-            "The folders that hold videos, with how many each holds.",
+            "The folders that hold videos or 3D models, with how many each holds.",
             """{"type":"object","properties":{}}"""
         ),
         Tool(
             "loopr.thumbnail", "See thumbnails",
-            "A library video's thumbnail as a base64 JPEG.",
+            "A library video's thumbnail, or a VRM's own embedded one, as a base64 JPEG.",
             """{"type":"object","required":["video_id"],"properties":{"video_id":{"type":"integer"}}}"""
         ),
         Tool(
             "loopr.players", "See what is playing",
-            "Every open player, full screen or floating: what it is playing, where, and how it is set (speed, mute, resize, repeat, shuffle, A-B loop, zoom).",
+            "Every open player, full screen or floating: what it is playing, where, and how it is set (speed, mute, resize, repeat, shuffle, A-B loop, zoom). Open 3D model views are listed under models: the file, its format and meta, size, triangles, camera, spin, light, background.",
             """{"type":"object","properties":{}}"""
         ),
         Tool(
             "loopr.queue", "See a player's queue",
-            "The videos a player will step through with previous and next.",
+            "The videos a player (or the models a model view) will step through with previous and next.",
             """{"type":"object","properties":{$PLAYER_ID,
                 "offset":{"type":"integer","minimum":0,"default":0},
                 "limit":{"type":"integer","minimum":1,"maximum":500,"default":100}}}"""
         ),
         Tool(
-            "loopr.open", "Open videos",
-            "Open a library video full screen or in a floating window. The queue is the whole library (as tapping it in the grid does) or just its folder.",
+            "loopr.open", "Open videos and 3D models",
+            "Open a library video full screen or in a floating window, or a 3D model (.vrm, .glb, .gltf) in the model view. The queue is the whole library (as tapping it in the grid does), its folder, or just it; a model's queue defaults to its folder.",
             """{"type":"object","properties":{
-                "video_id":{"type":"integer","description":"From loopr.library."},
-                "path":{"type":"string","description":"A file path the library knows, instead of video_id."},
-                "queue":{"type":"string","enum":["library","folder","single"],"default":"library"},
+                "video_id":{"type":"integer","description":"From loopr.library: a video's id, or a model's."},
+                "path":{"type":"string","description":"A file path instead of video_id: a video the library knows, or a model in Loopr's Models folder, a folder added in 3D models, or anywhere Loopr may read."},
+                "queue":{"type":"string","enum":["library","folder","single"],"description":"Default library for a video, folder for a model."},
                 "window":{"type":"string","enum":["full","floating"],"default":"full"},
                 "position_ms":{"type":"integer","minimum":0,"default":0},
                 "paused":{"type":"boolean","default":false}}}"""
@@ -101,12 +105,35 @@ object Tools {
         ),
         Tool(
             "loopr.window", "Float, move and close players",
-            "Move a video between full screen, a floating window and picture-in-picture, rotate full screen, move or resize a floating window, or close players.",
+            "Move a video between full screen, a floating window and picture-in-picture, rotate full screen, move or resize a floating window, or close players and 3D model views.",
             """{"type":"object","required":["action"],"properties":{$PLAYER_ID,
                 "action":{"type":"string","enum":["float","expand","pip","rotate","move","resize","close","close_all"]},
                 "x":{"type":"integer","description":"For move, in pixels from the top left."},
                 "y":{"type":"integer"},
                 "width":{"type":"integer","description":"For resize, in pixels; the height follows the video."}}}"""
+        ),
+        Tool(
+            "loopr.model", "Turn and frame 3D models",
+            "Turn, zoom, pan, spin, light and step through a 3D model view (Loopr Desktop's loopr.model). yaw 0 is the model's front, 180 its back; pitch + looks from above; zoom 1 frames the whole model, 0.5 is twice as close; pan is in model radii.",
+            """{"type":"object","required":["action"],"properties":{$MODEL_ID,
+                "action":{"type":"string","enum":["rotate_to","rotate_by","zoom","pan","view","reset","spin","light","background","next","previous","jump"]},
+                "yaw":{"type":"number","description":"Degrees, for rotate_to and rotate_by."},
+                "pitch":{"type":"number","description":"Degrees, for rotate_to and rotate_by; within ±89.5."},
+                "zoom":{"type":"number","minimum":0.05,"maximum":20},
+                "x":{"type":"number","minimum":-5,"maximum":5,"description":"For pan: model radii to the right."},
+                "y":{"type":"number","minimum":-5,"maximum":5,"description":"For pan: model radii up."},
+                "view":{"type":"string","enum":["front","back","left","right","top","bottom"]},
+                "on":{"type":"boolean","default":true,"description":"For spin."},
+                "speed":{"type":"number","minimum":-360,"maximum":360,"description":"For spin, degrees a second (30 by default)."},
+                "light":{"type":"number","minimum":0,"maximum":3,"description":"How much light falls on the model (the Light slider): 1 normal, 0 dark, 3 very bright."},
+                "background":{"type":"string","enum":["dark","grey","light"]},
+                "index":{"type":"integer","minimum":0,"description":"For jump: a position from loopr.queue."}}}"""
+        ),
+        Tool(
+            "loopr.screenshot", "See what is on screen",
+            "A JPEG of what a player or model view shows: video is the picture alone, window the screen as drawn, controls and all. Only while it is on screen.",
+            """{"type":"object","properties":{$PLAYER_ID,
+                "what":{"type":"string","enum":["video","window"],"default":"video"}}}"""
         ),
         Tool(
             "loopr.settings", "See settings",

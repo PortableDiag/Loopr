@@ -135,4 +135,24 @@
     <string name="phoneapi_allow_all">Allow all</string>
     <string name="phoneapi_allow">Allow</string>
     <string name="phoneapi_deny">Don\'t allow</string>
+
+    <!-- 3D models -->
+    <string name="models_title">3D models</string>
+    <string name="model_loading">Loading model…</string>
+    <string name="model_light">☀ Light</string>
+    <string name="model_front">Front</string>
+    <string name="model_back">Back</string>
+    <string name="model_side">Side</string>
+    <string name="model_top">Top</string>
+    <string name="model_spin">Spin</string>
+    <string name="model_reset">Reset</string>
+    <string name="model_bg_dark">Dark</string>
+    <string name="model_bg_grey">Grey</string>
+    <string name="model_bg_light">Light</string>
+    <string name="models_add_folder">Add a folder</string>
+    <string name="models_open_file">Open a file</string>
+    <string name="models_remove_folders">Remove a folder</string>
+    <string name="models_empty">No 3D models yet.\n\nAdd a folder that holds .vrm, .glb or .gltf files, open one file, or put them in\n%1$s</string>
+    <string name="models_none_to_remove">No folders have been added</string>
+    <string name="model_unreadable">Can\'t open this model: %1$s</string>
 </resources>

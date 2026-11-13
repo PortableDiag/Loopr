@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.19 — 2026-11-12
+- **3D models.** ⋮ › **3D models** shows VRM avatars (0.x and 1.0), GLB and glTF files — the same formats Loopr Desktop opened in 0.2 — in a full-screen viewer: drag to turn, pinch to zoom, two fingers to pan, double tap to reset; Front / Back / Side / Top, Spin, a ☀ Light slider and a choice of background; ⏮ / ⏭ step through the folder. Drawn by Google's Filament in the rest pose with the model's own textures and materials; animation, spring bones, expressions and outlines are not drawn, as on the desktop.
+  - Android's media permission doesn't cover model files, so Loopr finds them in its own folder (`Android/data/com.loopr.player/files/Models`), in folders you add with Android's picker, and in files you open. A file manager can open a `.vrm`, `.glb` or `.gltf` straight into the viewer.
+  - The grid shows each VRM's own thumbnail.
+  - **Fixed before it shipped:** most VRMs first came out as flat yellow silhouettes. Their exporter writes `"image\/png"` (legal JSON) and Filament's loader compares that text literally, finds no PNG decoder and drops every texture. Loopr now rewrites the escape before loading.
+- **The local API does all of it.** Two new tools, named as on Loopr Desktop: **`loopr.model`** (rotate, zoom, pan, preset views, reset, spin, light, background, next / previous / jump) and **`loopr.screenshot`** (a JPEG of a player, a floating window or a model view — the picture alone, or the screen as drawn). `loopr.library` and `loopr.folders` list models too, with a `kind`; `loopr.open` opens them; `loopr.players`, `loopr.queue` and `loopr.window close` cover model views. New routes `/api/models…` and `/api/players/{id}/screenshot`. Over MCP a screenshot comes back as an image. New tools start switched off on existing keys, as every tool does.
+
 ## 1.18.3 — 2026-10-27
 - **The local API comes back by itself after an update**, as it does after a reboot, if it was on. Until now it stayed off until Loopr was opened, so PhoneAPI lost it at every update.
 

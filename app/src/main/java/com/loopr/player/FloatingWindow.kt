@@ -1093,6 +1093,12 @@ class FloatingWindow(
 
     override fun closePlayer() = close()
 
+    override fun screenshotTarget(what: String): Screenshot.Target {
+        val texture = binding.playerView.videoSurfaceView as? TextureView
+        return if (what == "window") Screenshot.overlay(binding.root, texture, binding.playerView)
+        else Screenshot.texture(texture ?: throw IllegalStateException("The window has no picture yet"))
+    }
+
     /** Moves the window, kept on screen as a drag would keep it. */
     fun moveTo(x: Int, y: Int) {
         lp.x = x

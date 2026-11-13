@@ -53,6 +53,49 @@
             </intent-filter>
         </activity>
 
+        <!-- 3D models: VRM, GLB and glTF. File managers send them under their own types or, for an
+             extension Android doesn't know (.vrm), as octet-stream; the second filter catches those
+             by name. -->
+        <activity
+            android:name=".ModelViewerActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
+            android:label="@string/models_title"
+            android:theme="@style/Theme.Loopr.Player">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="model/gltf-binary" />
+                <data android:mimeType="model/gltf+json" />
+                <data android:mimeType="model/vrm" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:pathPattern=".*\\.vrm" />
+                <data android:pathPattern=".*\\..*\\.vrm" />
+                <data android:pathPattern=".*\\..*\\..*\\.vrm" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.vrm" />
+                <data android:pathPattern=".*\\.glb" />
+                <data android:pathPattern=".*\\..*\\.glb" />
+                <data android:pathPattern=".*\\..*\\..*\\.glb" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.glb" />
+                <data android:pathPattern=".*\\.gltf" />
+                <data android:pathPattern=".*\\..*\\.gltf" />
+                <data android:pathPattern=".*\\..*\\..*\\.gltf" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.gltf" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ModelsActivity"
+            android:exported="false"
+            android:label="@string/models_title" />
+
         <activity
             android:name=".api.ApiActivity"
             android:exported="false"

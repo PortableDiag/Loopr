@@ -23,6 +23,14 @@ import com.loopr.player.ThemeManager
 import com.loopr.player.ThumbnailLoader
 import com.loopr.player.VideoItem
 import com.loopr.player.VideoLibrary
+import com.loopr.player.ModelViewerActivity
+import com.loopr.player.Screenshot
+import com.loopr.player.model.ControllableModel
+import com.loopr.player.model.ModelItem
+import com.loopr.player.model.ModelLibrary
+import com.loopr.player.model.ModelMeta
+import com.loopr.player.model.ModelStatus
+import com.loopr.player.model.Models
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -54,6 +62,9 @@ class AndroidBackend(context: Context) : LooprBackend {
         "loopr.ab_loop" -> abLoop(args)
         "loopr.options" -> options(args)
         "loopr.window" -> window(args)
+        "loopr.model" -> model(args)
+        "loopr.screenshot" -> JSONObject().put("mime", "image/jpeg").put("what", args.optString("what").ifEmpty { "video" })
+            .put("data_b64", Base64.encodeToString(screenshotJpeg(args), Base64.NO_WRAP))
         "loopr.settings" -> settings()
         "loopr.change_settings" -> changeSettings(args)
         else -> throw ToolError(ToolError.UNKNOWN_TOOL, "No tool named $tool")
@@ -72,21 +83,46 @@ class AndroidBackend(context: Context) : LooprBackend {
     private fun library(args: JSONObject): JSONObject {
         val words = args.optString("q").lowercase().split(' ').filter { it.isNotBlank() }
         val folder = args.optString("folder").trim()
-        val all = requireLibrary().filter { e ->
+        val kind = args.optString("kind").ifEmpty { "all" }
+        if (kind !in setOf("all", "video", "model")) throw ToolError(ToolError.BAD_ARGS, "kind is one of all, video, model, not $kind")
+        val notes = ArrayList<String>()
+        val videos = when {
+            kind == "model" -> emptyList()
+            kind == "all" && !VideoLibrary.hasPermission(app) -> { notes += NO_VIDEOS_NOTE; emptyList() }
+            else -> requireLibrary()
+        }.filter { e ->
             words.all { e.item.title.lowercase().contains(it) } &&
                 (folder.isEmpty() || e.folderId.toString() == folder || e.item.bucket.equals(folder, ignoreCase = true))
         }
+        val models = if (kind == "video") emptyList() else ModelLibrary.list(app).filter { m ->
+            words.all { m.name.lowercase().contains(it) } &&
+                (folder.isEmpty() || m.folderKey == folder || m.folder.equals(folder, ignoreCase = true))
+        }
+        if (VideoLibrary.hasLimitedAccess(app) && kind != "model") notes += LIMITED_NOTE
+        val all: List<JSONObject> = videos.map { videoJson(it) } + models.map { modelJson(it) }
         val offset = args.optInt("offset", 0).coerceAtLeast(0)
         val limit = args.optInt("limit", 50).coerceIn(1, 500)
         return JSONObject()
             .put("total", all.size)
             .put("offset", offset)
-            .put("videos", JSONArray(all.drop(offset).take(limit).map { videoJson(it) }))
-            .apply { if (VideoLibrary.hasLimitedAccess(app)) put("note", LIMITED_NOTE) }
+            .put("videos", JSONArray(all.drop(offset).take(limit)))
+            .apply { if (notes.isNotEmpty()) put("note", notes.joinToString(" ")) }
     }
+
+    private fun modelJson(m: ModelItem) = JSONObject()
+        .put("id", m.id)
+        .put("kind", "model")
+        .put("title", m.name)
+        .put("size_bytes", m.sizeBytes)
+        .put("modified", m.modified)
+        .put("folder", m.folder)
+        .put("folder_id", m.folderKey)
+        .put("uri", m.uri.toString())
+        .putOpt("path", m.path)
 
     private fun videoJson(e: VideoLibrary.Entry) = JSONObject()
         .put("id", e.item.id)
+        .put("kind", "video")
         .put("title", e.item.title)
         .put("duration_ms", e.item.durationMs)
         .put("size_bytes", e.item.sizeBytes)
@@ -97,16 +133,30 @@ class AndroidBackend(context: Context) : LooprBackend {
         .putOpt("path", e.path)
 
     private fun folders(): JSONArray {
-        val groups = requireLibrary().groupBy { it.folderId }
-        return JSONArray(groups.values
+        val video = if (VideoLibrary.hasPermission(app)) VideoLibrary.query(app).groupBy { it.folderId }.values
             .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.first().item.bucket })
             .map { g ->
-                JSONObject().put("id", g.first().folderId).put("name", g.first().item.bucket)
+                JSONObject().put("id", g.first().folderId).put("kind", "video").put("name", g.first().item.bucket)
                     .put("videos", g.size).put("duration_ms", g.sumOf { it.item.durationMs })
-            })
+            } else emptyList()
+        val model = ModelLibrary.list(app).groupBy { it.folderKey }.values
+            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.first().folder })
+            .map { g ->
+                JSONObject().put("id", g.first().folderKey).put("kind", "model").put("name", g.first().folder)
+                    .put("models", g.size).putOpt("path", g.first().path?.substringBeforeLast('/'))
+            }
+        if (video.isEmpty() && model.isEmpty() && !VideoLibrary.hasPermission(app)) requireLibrary()
+        return JSONArray(video + model)
     }
 
     override fun thumbnailJpeg(videoId: Long): ByteArray {
+        if (ModelLibrary.isModelId(videoId)) {
+            val m = ModelLibrary.find(app, videoId)
+                ?: throw ToolError(ToolError.NOT_FOUND, "No model $videoId; loopr.library with kind model lists them")
+            val bmp = ModelLibrary.thumbnail(app, m)
+                ?: throw ToolError(ToolError.NOT_FOUND, "${m.name} carries no thumbnail of its own (VRMs do; most glTF files don't)")
+            return ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
+        }
         val entry = requireLibrary().firstOrNull { it.item.id == videoId }
             ?: throw ToolError(ToolError.NOT_FOUND, "No video $videoId in the library; loopr.library lists them")
         val bmp = runBlocking { ThumbnailLoader.load(app, entry.item) }
@@ -118,8 +168,10 @@ class AndroidBackend(context: Context) : LooprBackend {
 
     private fun players(): JSONObject {
         val list = MainThread.get { Players.all().map { it.playerId to it.status() } }
+        val models = MainThread.get { Models.all().map { it.playerId to it.modelStatus() } }
         return JSONObject()
             .put("players", JSONArray(list.map { (id, s) -> statusJson(id, s) }))
+            .put("models", JSONArray(models.map { (id, s) -> modelStatusJson(id, s) }))
             .put("floating_open", list.count { it.second.kind == PlayerStatus.FLOATING })
             .put("floating_max", FloatingPlayerService.MAX_WINDOWS)
     }
@@ -152,11 +204,43 @@ class AndroidBackend(context: Context) : LooprBackend {
             if (s.kind == PlayerStatus.FULL_SCREEN) put("pip", s.inPip)
         }
 
+    private fun modelStatusJson(id: Int, s: ModelStatus): JSONObject = JSONObject()
+        .put("id", id)
+        .put("kind", "model")
+        .put("title", s.meta?.title ?: s.name)
+        .put("name", s.name)
+        .put("uri", s.uri)
+        .putOpt("path", s.path)
+        .put("index", s.index)
+        .put("queue_size", s.queueSize)
+        .put("loading", s.loading)
+        .put("error", s.error ?: JSONObject.NULL)
+        .put("format", s.meta?.format ?: JSONObject.NULL)
+        .put("authors", JSONArray(s.meta?.authors ?: emptyList<String>()))
+        .put("version", s.meta?.version ?: JSONObject.NULL)
+        .put("license", s.meta?.license ?: JSONObject.NULL)
+        .put("triangles", s.meta?.triangles ?: 0)
+        .put("vertices", s.meta?.vertices ?: 0)
+        .put("textures", s.meta?.textures ?: 0)
+        .put("size", s.size?.let { JSONArray(it.toList()) } ?: JSONObject.NULL)
+        .put("camera", JSONObject()
+            .put("yaw_deg", Math.round(s.yaw * 10) / 10.0)
+            .put("pitch_deg", Math.round(s.pitch * 10) / 10.0)
+            .put("zoom", Math.round(s.zoom * 1000) / 1000.0)
+            .put("pan", JSONArray(listOf(Math.round(s.panX * 1000) / 1000.0, Math.round(s.panY * 1000) / 1000.0))))
+        .put("spin", s.spin)
+        .put("spin_speed", s.spinSpeed)
+        .put("light", Math.round(s.light * 100) / 100.0)
+        .put("background", s.background)
+
     /** Must run on the main thread. A missing id is only fine while there is exactly one player. */
     private fun resolve(args: JSONObject): ControllablePlayer {
         val open = Players.all()
         if (args.has("player_id")) {
             val id = args.optInt("player_id", -1)
+            if (Models.get(id) != null) throw ToolError(
+                ToolError.BAD_ARGS, "$id is a 3D model view, not a video player; loopr.model turns and frames it, loopr.window closes it"
+            )
             return Players.get(id) ?: throw ToolError(
                 ToolError.NOT_FOUND,
                 "No player $id is open." + if (open.isEmpty()) " None are; loopr.open opens one." else " Open now: ${open.joinToString { it.playerId.toString() }}."
@@ -169,6 +253,26 @@ class AndroidBackend(context: Context) : LooprBackend {
         }
     }
 
+    /** Must run on the main thread: the model view [args] names, or the only one. */
+    private fun resolveModel(args: JSONObject): ControllableModel {
+        val open = Models.all()
+        if (args.has("player_id")) {
+            val id = args.optInt("player_id", -1)
+            if (Players.get(id) != null) throw ToolError(
+                ToolError.BAD_ARGS, "$id is a video player, not a 3D model view; loopr.playback and loopr.options drive it"
+            )
+            return Models.get(id) ?: throw ToolError(
+                ToolError.NOT_FOUND,
+                "No model view $id is open." + if (open.isEmpty()) " None are; loopr.open with a .vrm, .glb or .gltf opens one." else " Open now: ${open.joinToString { it.playerId.toString() }}."
+            )
+        }
+        return when (open.size) {
+            0 -> throw ToolError(ToolError.NOT_FOUND, "No 3D model view is open; loopr.open with a .vrm, .glb or .gltf opens one")
+            1 -> open.first()
+            else -> throw ToolError(ToolError.BAD_ARGS, "${open.size} model views are open (${open.joinToString { it.playerId.toString() }}); say which with player_id")
+        }
+    }
+
     /** Runs [block] on [resolve]'s player and answers that player's state afterwards. */
     private fun onPlayer(args: JSONObject, block: (ControllablePlayer) -> Unit): JSONObject =
         MainThread.get {
@@ -178,6 +282,23 @@ class AndroidBackend(context: Context) : LooprBackend {
         }
 
     private fun queue(args: JSONObject): JSONObject = MainThread.get {
+        val asModel = (args.has("player_id") && Models.get(args.optInt("player_id", -1)) != null) ||
+            (!args.has("player_id") && Players.all().isEmpty() && Models.all().size == 1)
+        if (asModel) {
+            val m = resolveModel(args)
+            val items = m.modelQueue()
+            val current = m.modelStatus().index
+            val offset = args.optInt("offset", 0).coerceAtLeast(0)
+            val limit = args.optInt("limit", 100).coerceIn(1, 500)
+            return@get JSONObject()
+                .put("player_id", m.playerId)
+                .put("index", current)
+                .put("total", items.size)
+                .put("items", JSONArray(items.withIndex().drop(offset).take(limit).map { (i, v) ->
+                    JSONObject().put("index", i).put("title", v.name).put("uri", v.uri.toString())
+                        .put("video_id", v.id).putOpt("path", v.path).put("current", i == current)
+                }))
+        }
         val p = resolve(args)
         val items = p.queueItems()
         val current = p.status().index
@@ -278,6 +399,7 @@ class AndroidBackend(context: Context) : LooprBackend {
     // ---------------- Opening and windows ----------------
 
     private fun open(args: JSONObject): JSONObject {
+        modelToOpen(args)?.let { return openModel(it, args) }
         val library = requireLibrary()
         val entry = when {
             args.has("video_id") -> library.firstOrNull { it.item.id == args.optLong("video_id") }
@@ -301,6 +423,124 @@ class AndroidBackend(context: Context) : LooprBackend {
             "full" -> openFull(queue, index, entry.item, position, paused)
             else -> throw ToolError(ToolError.BAD_ARGS, "window is full or floating, not $w")
         }
+    }
+
+    /** The model [args] names, or null when they name a video. */
+    private fun modelToOpen(args: JSONObject): ModelItem? {
+        if (args.has("video_id")) {
+            val id = args.optLong("video_id")
+            if (!ModelLibrary.isModelId(id)) return null
+            return ModelLibrary.find(app, id)
+                ?: throw ToolError(ToolError.NOT_FOUND, "No model $id; loopr.library with kind model lists them")
+        }
+        val path = args.optString("path").trim()
+        if (path.isEmpty() || !ModelMeta.isModelName(path)) return null
+        return ModelLibrary.findByPath(app, path) ?: throw ToolError(
+            ToolError.NOT_FOUND,
+            "Loopr can't read a model at $path. It sees models in its own folder (${ModelLibrary.ownFolder(app)?.absolutePath}), " +
+                "in folders the owner adds under ⋮ › 3D models, and files a file manager opens."
+        )
+    }
+
+    private fun openModel(item: ModelItem, args: JSONObject): JSONObject {
+        val w = args.optString("window").ifEmpty { "full" }
+        if (w == "floating") throw ToolError(ToolError.REFUSED, "3D models open full screen, in the model view; floating windows are for video")
+        if (w != "full") throw ToolError(ToolError.BAD_ARGS, "window is full or floating, not $w")
+        val (queue, index) = when (val q = args.optString("queue").ifEmpty { "folder" }) {
+            "folder" -> ModelLibrary.folderOf(app, item).let { it to it.indexOfFirst { m -> m.id == item.id }.coerceAtLeast(0) }
+            "library" -> ModelLibrary.list(app).let { list -> if (list.any { it.id == item.id }) list to list.indexOfFirst { it.id == item.id } else listOf(item) to 0 }
+            "single" -> listOf(item) to 0
+            else -> throw ToolError(ToolError.BAD_ARGS, "queue is one of library, folder, single, not $q")
+        }
+        requireCanShowScreen()
+        val before = MainThread.get { Models.all().associate { it.playerId to it.modelStatus().uri } }
+        MainThread.run {
+            ModelViewerActivity.pendingQueue = queue
+            app.startActivity(Intent(app, ModelViewerActivity::class.java).apply {
+                putExtra(ModelViewerActivity.EXTRA_INDEX, index)
+                addFlags(
+                    if (multiInstance()) Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+                    else Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+            })
+        }
+        val until = System.currentTimeMillis() + OPEN_WAIT_MS
+        while (System.currentTimeMillis() < until) {
+            MainThread.get {
+                Models.all().firstOrNull { m -> val u = m.modelStatus().uri; u == item.uri.toString() && before[m.playerId] != u }
+                    ?.let { modelStatusJson(it.playerId, it.modelStatus()) }
+            }?.let { return it }
+            Thread.sleep(100)
+        }
+        throw ToolError(ToolError.REFUSED, "Loopr was asked to open the model view but none appeared; Android may have kept it from coming to the front")
+    }
+
+    private fun model(args: JSONObject): JSONObject {
+        val action = args.optString("action")
+        fun num(name: String): Double? = if (!args.has(name)) null else (args.opt(name) as? Number)?.toDouble()
+            ?: (args.opt(name) as? String)?.toDoubleOrNull()
+            ?: throw ToolError(ToolError.BAD_ARGS, "$name must be a number")
+        fun range(name: String, v: Double?, lo: Double, hi: Double): Double? {
+            if (v != null && (v.isNaN() || v < lo || v > hi)) throw ToolError(ToolError.BAD_ARGS, "$name is $lo to $hi")
+            return v
+        }
+        val yaw = num("yaw")
+        val pitch = num("pitch")
+        return MainThread.get {
+            val m = resolveModel(args)
+            when (action) {
+                "rotate_to" -> {
+                    if (yaw == null && pitch == null) throw ToolError(ToolError.BAD_ARGS, "rotate_to needs yaw and/or pitch")
+                    m.rotateTo(yaw, range("pitch", pitch, -89.5, 89.5))
+                }
+                "rotate_by" -> {
+                    if (yaw == null && pitch == null) throw ToolError(ToolError.BAD_ARGS, "rotate_by needs yaw and/or pitch")
+                    m.rotateBy(yaw ?: 0.0, pitch ?: 0.0)
+                }
+                "zoom" -> m.setZoom(range("zoom", num("zoom"), 0.05, 20.0) ?: throw ToolError(ToolError.BAD_ARGS, "zoom needs zoom, 0.05 to 20"))
+                "pan" -> {
+                    val x = range("x", num("x"), -5.0, 5.0); val y = range("y", num("y"), -5.0, 5.0)
+                    if (x == null && y == null) throw ToolError(ToolError.BAD_ARGS, "pan needs x and/or y")
+                    m.panTo(x, y)
+                }
+                "view" -> {
+                    val v = args.optString("view")
+                    if (!m.setView(v)) throw ToolError(ToolError.BAD_ARGS, "view is one of front, back, left, right, top, bottom")
+                }
+                "reset" -> m.resetView()
+                "spin" -> m.setSpin(if (args.has("on")) boolArg(args, "on") else true, range("speed", num("speed"), -360.0, 360.0))
+                "light" -> m.setLight((range("light", num("light"), 0.0, 3.0) ?: throw ToolError(ToolError.BAD_ARGS, "light needs light, 0 to 3")).toFloat())
+                "background" -> {
+                    val b = args.optString("background")
+                    if (b !in setOf("dark", "grey", "light")) throw ToolError(ToolError.BAD_ARGS, "background is one of dark, grey, light")
+                    m.setBackground(b)
+                }
+                "next" -> if (!m.next()) throw ToolError(ToolError.REFUSED, "This is the last model in the queue; previous goes back, jump goes anywhere")
+                "previous" -> m.previous()
+                "jump" -> {
+                    val i = intArg(args, "index")
+                    val size = m.modelQueue().size
+                    if (i !in 0 until size) throw ToolError(ToolError.BAD_ARGS, "index must be 0 to ${size - 1}; this queue has $size")
+                    m.jumpTo(i)
+                }
+                else -> throw ToolError(ToolError.BAD_ARGS, "action is one of rotate_to, rotate_by, zoom, pan, view, reset, spin, light, background, next, previous, jump")
+            }
+            modelStatusJson(m.playerId, m.modelStatus())
+        }
+    }
+
+    override fun screenshotJpeg(args: JSONObject): ByteArray {
+        val what = args.optString("what").ifEmpty { "video" }
+        if (what != "video" && what != "window") throw ToolError(ToolError.BAD_ARGS, "what is video or window, not $what")
+        val target = MainThread.get {
+            val id = if (args.has("player_id")) args.optInt("player_id", -1) else null
+            val model = id?.let { Models.get(it) } ?: if (id == null && Players.all().isEmpty()) Models.all().singleOrNull() else null
+            if (model != null) model.screenshotTarget(what) else resolve(args).screenshotTarget(what)
+        }
+        val bmp = try { target.capture() } catch (e: IllegalStateException) {
+            throw ToolError(ToolError.REFUSED, e.message ?: "Nothing to copy")
+        }
+        return ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
     }
 
     private fun openFloating(queue: List<VideoItem>, index: Int, position: Long, paused: Boolean): JSONObject {
@@ -356,8 +596,14 @@ class AndroidBackend(context: Context) : LooprBackend {
     private fun window(args: JSONObject): JSONObject {
         val action = args.optString("action")
         if (action == "close_all") {
-            val n = MainThread.get { Players.all().onEach { it.closePlayer() }.size }
+            val n = MainThread.get { Players.all().onEach { it.closePlayer() }.size + Models.all().onEach { it.closeModel() }.size }
             return JSONObject().put("closed", n)
+        }
+        val modelId = args.optInt("player_id", -1).takeIf { args.has("player_id") && MainThread.get { Models.get(it) != null } }
+        if (modelId != null) {
+            if (action != "close") throw ToolError(ToolError.BAD_ARGS, "$modelId is a 3D model view, which opens full screen; of loopr.window only close applies to it")
+            MainThread.run { Models.get(modelId)?.closeModel() }
+            return JSONObject().put("closed", modelId)
         }
         val needs = setOf("float", "expand", "pip", "rotate", "move", "resize", "close")
         if (action !in needs) throw ToolError(ToolError.BAD_ARGS, "action is one of ${needs.joinToString()}, close_all")
@@ -507,6 +753,8 @@ class AndroidBackend(context: Context) : LooprBackend {
         /** In [ThemeManager] order. */
         private val THEME_NAMES = listOf("system", "light", "dark")
 
+        private const val NO_VIDEOS_NOTE =
+            "Videos are hidden: Loopr has not been allowed to see them (open Loopr and tap Grant access). 3D models are listed anyway."
         private const val LIMITED_NOTE =
             "Android shows Loopr only the videos the owner picked (\"Allow limited access\"); the rest of the library is hidden from it."
     }

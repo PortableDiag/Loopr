@@ -1569,6 +1569,12 @@ class PlayerActivity : AppCompatActivity(), ControllablePlayer {
 
     override fun closePlayer() = finish()
 
+    override fun screenshotTarget(what: String): Screenshot.Target {
+        val surface = binding.playerView.videoSurfaceView as? android.view.SurfaceView
+        return if (what == "window") Screenshot.window(window, surface)
+        else Screenshot.surface(surface ?: throw IllegalStateException("The player has no picture yet"))
+    }
+
     /**
      * Floats this video, or says why it can't. The caller has already checked the overlay
      * permission and the window cap, so [floatVideo] never reaches its dialogs from here.
